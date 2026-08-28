@@ -1,8 +1,8 @@
 # Kult Marketing OS — build status
 
-**This project is incomplete.** The session ended partway through the build. This
-file records exactly what exists, what is verified, and what has not been built,
-so the next person does not have to guess.
+**This project is incomplete.** The backend is built and running; the web
+frontend is not started. This file records exactly what exists, what is
+verified, and what has not been built, so the next person does not have to guess.
 
 Last updated: 2026-08-28
 
@@ -23,9 +23,10 @@ executed against real infrastructure.
 | `packages/auth` | Complete | Typechecks. Privy server-side token verification, app-id cross-check, RBAC assertion layer. |
 | `packages/integrations` | Complete | **27 unit tests pass.** AES-256-GCM token sealing, PKCE, SSRF guard, X / Instagram / LinkedIn adapters, S3 storage, research source adapters. |
 | `packages/ai` | Complete | Typechecks against the real OpenAI SDK v7. AIService, 11 agents, orchestrator, knowledge base, safety layer. |
-| `apps/api` | Complete | Typechecks. NestJS 12, ~45 endpoints, global auth + permission guards, audit logging, Swagger. |
+| `apps/api` | Complete | **Boots and serves.** `/health` ok, `/ready` reports database+redis ok, protected routes return the documented 401 envelope with a requestId. |
+| `apps/worker` | Complete | **Boots and runs.** 6 queues consuming, 11 agents + 5 workflows synced to the database, 5 maintenance schedulers registered. |
 
-**Test totals: 58 unit tests, all passing.**
+**Test totals: 65 tests passing** - 58 unit, plus 7 worker integration tests run against real PostgreSQL and Redis.
 
 ### External API contracts — verified against official documentation
 
@@ -70,10 +71,6 @@ against the installed SDK's own type definitions, not from memory:
 These are absent, not stubbed. There are no placeholder files pretending
 otherwise.
 
-- **`apps/worker`** — package manifest and tsconfig only. **No source.** This is
-  the single most important gap: the API enqueues publishing, research,
-  generation, and analytics jobs that currently have no consumer. Nothing
-  publishes, and no scheduled content will ever fire.
 - **`apps/web`** — package manifest only. **No source.** No login page, no
   dashboard, no studio, no calendar. All 17 planned routes are unbuilt.
 - **`packages/ui`** — manifest only. Design tokens were extracted from the
@@ -84,31 +81,28 @@ otherwise.
   this file. `README`, `ARCHITECTURE`, `SECURITY`, `DEPLOYMENT`, `API`,
   `SOCIAL-INTEGRATIONS`, `AI-AGENTS`, `RUNBOOK`, `PRODUCTION_READINESS` are all
   unwritten.
-- **Integration and E2E tests** — only unit tests exist. No Supertest suite, no
-  Playwright suite.
-- **API boot smoke test** — the API typechecks but was **never started**. It has
-  not been run against Postgres/Redis even once.
+- **API integration and E2E tests** — the worker has integration tests against
+  real Postgres and Redis, but there is no Supertest suite for the API routes and
+  no Playwright suite.
 
 ### Explicitly not verified
 
-Nothing in this repository has been deployed, and no social OAuth flow has been
-run against real credentials. Claims about provider behaviour rest on official
-documentation and SDK type definitions, not on live calls.
+Nothing has been deployed. **No social OAuth flow, publish, or metric read has
+been executed against real provider credentials** - the smoke tests use fake
+tokens. Claims about provider behaviour rest on official documentation and SDK
+type definitions, not on live calls. The AI agents have never been run against a
+real OpenAI key, so no agent prompt has produced a real generation.
 
 ---
 
 ## Next steps, in order
 
-1. **Boot the API.** Typechecking is not running. Expect DI wiring problems on
-   first start.
-2. **Build `apps/worker`.** Publishing queue first: idempotency key → distributed
-   lock → check existing `Publication` → publish → record provider response.
-   The DB schema and the shared helpers (`publishingIdempotencyKey`,
-   `publishingLockKey`, `publishJobId`) are already in place for this.
-   Include the reconciliation pass that repairs scheduled content whose queue job
-   is missing.
-3. **Build `apps/web`.**
-4. **Docker, nginx, docs, E2E.**
+1. **Build `apps/web`.** This is now the only thing standing between the system
+   and being usable by a person. The API and worker are running.
+2. **Docker, nginx, compose.**
+3. **Docs and E2E tests.**
+4. **First real provider connection.** Everything about OAuth and publishing is
+   implemented but has never touched a live provider account.
 
 ## Local development
 
@@ -120,6 +114,9 @@ cp .env.example .env   # then fill in ENCRYPTION_KEY, PRIVY_*, OPENAI_API_KEY
 pnpm --filter @kult/database migrate:deploy
 pnpm -r --filter "./packages/**" build
 pnpm test
+
+pnpm --filter @kult/worker start   # 6 queues + maintenance schedulers
+pnpm --filter @kult/api start      # http://localhost:4000/health
 ```
 
 Generate an encryption key with `openssl rand -hex 32`. If that key is lost,

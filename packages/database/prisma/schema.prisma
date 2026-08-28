@@ -12,9 +12,16 @@
 // from prisma.config.ts; the runtime connection comes from the PrismaPg driver
 // adapter. See packages/database/src/client.ts.
 
+// The API and worker are CommonJS (NestJS requires it). Prisma 7's default
+// generator output is ESM and uses `import.meta.url`, which TypeScript cannot
+// transpile to CommonJS - Node then loads the emitted file as ESM and fails on
+// `exports is not defined`. Pinning the module format keeps the generated
+// client loadable from the CommonJS apps.
 generator client {
-  provider = "prisma-client"
-  output   = "../generated/client"
+  provider            = "prisma-client"
+  output              = "../generated/client"
+  moduleFormat        = "cjs"
+  importFileExtension = "js"
 }
 
 datasource db {

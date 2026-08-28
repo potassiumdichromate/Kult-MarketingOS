@@ -1,7 +1,13 @@
+// Loads .env for local development, checking the app directory first and then the
+// monorepo root. In containers there is no .env file, so this is a no-op and real
+// environment variables always take precedence.
+import { config as loadEnv } from 'dotenv';
+import { resolve } from 'node:path';
+loadEnv({ path: [resolve(process.cwd(), '.env'), resolve(__dirname, '../../../.env')], quiet: true });
 import 'reflect-metadata';
 import { NestFactory } from '@nestjs/core';
 import type { NestExpressApplication } from '@nestjs/platform-express';
-import { Logger, ValidationPipe } from '@nestjs/common';
+import { Logger } from '@nestjs/common';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import helmet from 'helmet';
 import cookieParser from 'cookie-parser';
@@ -68,10 +74,9 @@ async function bootstrap(): Promise<void> {
     exclude: ['health', 'ready'],
   });
 
-  app.useGlobalPipes(
-    new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true, transform: true }),
-  );
-
+  // Request validation is done per route with ZodValidationPipe, which parses
+  // and strips unknown keys. Nest's global ValidationPipe is deliberately not
+  // installed: it depends on class-validator, which this codebase does not use.
   app.useGlobalFilters(new ErrorsFilter(app.get(APP_CONFIG)));
   app.enableShutdownHooks();
 
