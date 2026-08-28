@@ -1,8 +1,8 @@
 # Kult Marketing OS — build status
 
-**This project is incomplete.** The backend is built and running; the web
-frontend is not started. This file records exactly what exists, what is
-verified, and what has not been built, so the next person does not have to guess.
+**The application is built and runs end to end.** What remains is packaging and
+documentation, not features. This file records exactly what exists, what is
+verified, and what has not been done, so the next person does not have to guess.
 
 Last updated: 2026-08-28
 
@@ -25,8 +25,10 @@ executed against real infrastructure.
 | `packages/ai` | Complete | Typechecks against the real OpenAI SDK v7. AIService, 11 agents, orchestrator, knowledge base, safety layer. |
 | `apps/api` | Complete | **Boots and serves.** `/health` ok, `/ready` reports database+redis ok, protected routes return the documented 401 envelope with a requestId. |
 | `apps/worker` | Complete | **Boots and runs.** 6 queues consuming, 11 agents + 5 workflows synced to the database, 5 maintenance schedulers registered. |
+| `apps/web` | Complete | **Builds and serves.** Next.js 16 + React 19 + Tailwind 4. All 23 routes render; every required route from the specification exists. |
 
-**Test totals: 65 tests passing** - 58 unit, plus 7 worker integration tests run against real PostgreSQL and Redis.
+**Test totals: 65 tests passing** - 58 unit, plus 7 worker integration tests run
+against real PostgreSQL and Redis. Every package and app typechecks with zero errors.
 
 ### External API contracts — verified against official documentation
 
@@ -71,11 +73,6 @@ against the installed SDK's own type definitions, not from memory:
 These are absent, not stubbed. There are no placeholder files pretending
 otherwise.
 
-- **`apps/web`** — package manifest only. **No source.** No login page, no
-  dashboard, no studio, no calendar. All 17 planned routes are unbuilt.
-- **`packages/ui`** — manifest only. Design tokens were extracted from the
-  sibling Kult app (dark, purple/cyan neon, Sora + JetBrains Mono, radius
-  0.75rem) but not written down here.
 - **Docker / nginx / compose** — nothing in `infra/`.
 - **Documentation** — only `.env.example` (which is complete and accurate) and
   this file. `README`, `ARCHITECTURE`, `SECURITY`, `DEPLOYMENT`, `API`,
@@ -97,12 +94,12 @@ real OpenAI key, so no agent prompt has produced a real generation.
 
 ## Next steps, in order
 
-1. **Build `apps/web`.** This is now the only thing standing between the system
-   and being usable by a person. The API and worker are running.
-2. **Docker, nginx, compose.**
-3. **Docs and E2E tests.**
+1. **Docker, nginx, compose.** Nothing is packaged for deployment yet.
+2. **Docs** — README, ARCHITECTURE, SECURITY, DEPLOYMENT, RUNBOOK.
+3. **API Supertest suite and Playwright E2E.**
 4. **First real provider connection.** Everything about OAuth and publishing is
-   implemented but has never touched a live provider account.
+   implemented but has never touched a live provider account. Expect surprises
+   there before anywhere else.
 
 ## Local development
 

@@ -1,0 +1,176 @@
+@import 'tailwindcss';
+
+/*
+ * Kult Marketing OS design system.
+ *
+ * Tokens are carried over from the Kult browser app so the two products read as
+ * one family: a deep blue-black ground, electric purple as the primary, cyan as
+ * the accent, Sora for display and body, JetBrains Mono for anything numeric or
+ * machine-generated.
+ *
+ * This is a dark-first internal tool. It commits to the dark palette rather than
+ * shipping a half-considered light mode.
+ */
+
+@theme {
+  --color-background: hsl(220 50% 6%);
+  --color-foreground: hsl(210 20% 93%);
+
+  --color-surface: hsl(220 45% 10%);
+  --color-surface-raised: hsl(220 40% 12%);
+  --color-surface-sunken: hsl(220 50% 4%);
+
+  --color-card: hsl(220 45% 10%);
+  --color-card-foreground: hsl(210 20% 93%);
+
+  --color-primary: hsl(278 88% 58%);
+  --color-primary-foreground: hsl(0 0% 100%);
+  --color-primary-muted: hsl(278 60% 20%);
+
+  --color-accent: hsl(198 92% 68%);
+  --color-accent-foreground: hsl(268 35% 8%);
+
+  --color-muted: hsl(268 24% 16%);
+  --color-muted-foreground: hsl(210 15% 55%);
+
+  --color-border: hsl(210 25% 20%);
+  --color-border-strong: hsl(210 25% 30%);
+  --color-input: hsl(220 30% 14%);
+  --color-ring: hsl(278 88% 58%);
+
+  --color-success: hsl(152 78% 56%);
+  --color-warning: hsl(40 85% 58%);
+  --color-destructive: hsl(0 84% 60%);
+  --color-destructive-foreground: hsl(0 0% 100%);
+
+  --color-neon-purple: hsl(278 88% 62%);
+  --color-neon-cyan: hsl(198 92% 68%);
+  --color-neon-green: hsl(152 78% 56%);
+  --color-neon-pink: hsl(340 85% 62%);
+
+  --font-display: 'Sora', ui-sans-serif, system-ui, sans-serif;
+  --font-sans: 'Sora', ui-sans-serif, system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, 'SFMono-Regular', monospace;
+
+  --radius-sm: 0.375rem;
+  --radius-md: 0.5rem;
+  --radius-lg: 0.75rem;
+  --radius-xl: 1rem;
+
+  --shadow-neon: 0 0 24px hsl(278 88% 62% / 0.35);
+  --shadow-cyan: 0 0 18px hsl(198 92% 68% / 0.3);
+}
+
+@layer base {
+  * {
+    border-color: var(--color-border);
+  }
+
+  html {
+    color-scheme: dark;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  body {
+    background-color: var(--color-background);
+    color: var(--color-foreground);
+    font-family: var(--font-sans);
+    /* A subtle radial wash keeps large empty surfaces from reading as flat black. */
+    background-image:
+      radial-gradient(ellipse 80% 50% at 50% -20%, hsl(278 88% 30% / 0.18), transparent),
+      radial-gradient(ellipse 60% 40% at 100% 0%, hsl(198 92% 40% / 0.08), transparent);
+    background-attachment: fixed;
+    min-height: 100vh;
+  }
+
+  /* Numeric and machine-generated values are monospaced so columns line up. */
+  .tabular {
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+  }
+
+  ::selection {
+    background: hsl(278 88% 58% / 0.35);
+  }
+
+  /* Scrollbars styled to match the surface rather than the OS default. */
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: var(--color-border);
+    border-radius: 9999px;
+    border: 2px solid transparent;
+    background-clip: content-box;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: var(--color-border-strong);
+    background-clip: content-box;
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--color-ring);
+    outline-offset: 2px;
+  }
+}
+
+@layer utilities {
+  /* Frosted panel used for cards and the sidebar. */
+  .glass {
+    background: hsl(220 45% 10% / 0.72);
+    backdrop-filter: blur(12px);
+  }
+
+  .text-gradient {
+    background: linear-gradient(135deg, hsl(198 92% 68%), hsl(278 88% 62%));
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+
+  @keyframes shimmer {
+    0% {
+      background-position: -200% 0;
+    }
+    100% {
+      background-position: 200% 0;
+    }
+  }
+
+  .animate-shimmer {
+    background: linear-gradient(
+      90deg,
+      var(--color-muted) 25%,
+      var(--color-surface-raised) 50%,
+      var(--color-muted) 75%
+    );
+    background-size: 200% 100%;
+    animation: shimmer 1.6s linear infinite;
+  }
+
+  @keyframes fade-in {
+    from {
+      opacity: 0;
+      transform: translateY(8px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+
+  .animate-fade-in {
+    animation: fade-in 0.35s ease-out forwards;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .animate-shimmer,
+    .animate-fade-in {
+      animation: none;
+    }
+  }
+}
