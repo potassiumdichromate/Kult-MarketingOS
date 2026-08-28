@@ -1,0 +1,23 @@
+packages:
+  - 'apps/*'
+  - 'packages/*'
+
+allowBuilds:
+  '@prisma/engines': set this to true or false
+  '@reown/appkit': set this to true or false
+  '@scarf/scarf': set this to true or false
+  bufferutil: set this to true or false
+  esbuild: set this to true or false
+  keccak: set this to true or false
+  msgpackr-extract: set this to true or false
+  prisma: set this to true or false
+  utf-8-validate: set this to true or false
+
+onlyBuiltDependencies:
+  - '@prisma/engines'
+  - prisma
+  - esbuild
+  - msgpackr-extract
+  - '@tailwindcss/oxide'
+  - sharp
+  - unrs-resolver

@@ -1,0 +1,32 @@
+{
+  "name": "@kult/ai",
+  "version": "1.0.0",
+  "private": true,
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.test.json",
+    "test": "vitest run --passWithNoTests"
+  },
+  "dependencies": {
+    "@kult/config": "workspace:*",
+    "@kult/shared": "workspace:*",
+    "@kult/database": "workspace:*",
+    "openai": "^7.8.0",
+    "zod": "^4.4.3",
+    "@kult/integrations": "workspace:*",
+    "@kult/auth": "workspace:*"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.4",
+    "@types/node": "^22.15.3"
+  }
+}

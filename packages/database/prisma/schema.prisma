@@ -1,0 +1,1356 @@
+// Kult Marketing OS - data model
+//
+// Conventions
+//  - Every organization-owned row carries `organizationId` and is indexed on it.
+//    The repository layer never queries these tables without a tenant predicate.
+//  - Identifiers are cuid().
+//  - Timestamps are stored in UTC. Display conversion uses Organization.timezone.
+//  - Secrets (OAuth tokens, PKCE verifiers) are stored only in *Encrypted columns,
+//    sealed with AES-256-GCM by packages/integrations/crypto.
+//
+// Prisma 7: the datasource carries no `url`. The migration connection string comes
+// from prisma.config.ts; the runtime connection comes from the PrismaPg driver
+// adapter. See packages/database/src/client.ts.
+
+generator client {
+  provider = "prisma-client"
+  output   = "../generated/client"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ---------------------------------------------------------------------------
+// Enums
+// ---------------------------------------------------------------------------
+
+enum OrganizationRole {
+  OWNER
+  ADMIN
+  EDITOR
+  ANALYST
+  VIEWER
+}
+
+enum AutomationMode {
+  MANUAL
+  COPILOT
+  AUTOPILOT
+}
+
+enum MarketingGoal {
+  AWARENESS
+  COMMUNITY_GROWTH
+  USER_ACQUISITION
+  GAME_CREATORS
+  SPORTS_PREDICTION_USERS
+  WEB3_USERS
+  DEVELOPER_ADOPTION
+  PARTNERSHIPS
+  RETENTION
+}
+
+enum SocialProvider {
+  X
+  INSTAGRAM
+  LINKEDIN
+}
+
+enum ConnectionStatus {
+  ACTIVE
+  EXPIRED
+  REVOKED
+  ERROR
+  DISCONNECTED
+}
+
+enum ContentType {
+  X_POST
+  X_THREAD
+  INSTAGRAM_CAPTION
+  INSTAGRAM_REEL
+  INSTAGRAM_CAROUSEL
+  LINKEDIN_POST
+  LINKEDIN_ARTICLE
+  REDDIT_POST
+  DISCORD_POST
+}
+
+enum ContentStatus {
+  DRAFT
+  PENDING_APPROVAL
+  APPROVED
+  REJECTED
+  SCHEDULED
+  PUBLISHING
+  PUBLISHED
+  FAILED
+  CANCELLED
+}
+
+enum ApprovalDecision {
+  APPROVED
+  REJECTED
+  CHANGES_REQUESTED
+}
+
+enum RiskLevel {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+enum ApprovalTopic {
+  TOKEN_CLAIM
+  FINANCIAL_CLAIM
+  PARTNERSHIP
+  COMPETITOR_ACCUSATION
+  SENSITIVE_NEWS
+  POLITICAL
+  CONTROVERSIAL
+  REGULATORY
+  UNVERIFIED_STATISTIC
+}
+
+enum OpportunityStatus {
+  NEW
+  REVIEWED
+  SELECTED
+  CONVERTED
+  DISMISSED
+  EXPIRED
+}
+
+enum CampaignStatus {
+  DRAFT
+  ACTIVE
+  PAUSED
+  COMPLETED
+  ARCHIVED
+}
+
+enum CampaignTemplate {
+  PRODUCT_LAUNCH
+  FEATURE_LAUNCH
+  COMMUNITY_GROWTH
+  GAME_LAUNCH
+  EDUCATIONAL
+  THOUGHT_LEADERSHIP
+  ENGAGEMENT
+  EVENT
+  PARTNERSHIP
+}
+
+enum ResearchSourceType {
+  WEB
+  RSS
+  REDDIT
+  X
+  YOUTUBE
+  GOOGLE_TRENDS
+  NEWS
+  CUSTOM_URL
+}
+
+enum ResearchSourceStatus {
+  ACTIVE
+  DISABLED
+  ERROR
+  UNAVAILABLE
+}
+
+enum TrendStatus {
+  EMERGING
+  ACTIVE
+  DECLINING
+  EXPIRED
+}
+
+enum PublicationStatus {
+  PENDING
+  SUCCEEDED
+  FAILED
+}
+
+enum ExecutionStatus {
+  PENDING
+  RUNNING
+  SUCCEEDED
+  FAILED
+  CANCELLED
+}
+
+enum StrategyInsightStatus {
+  PROPOSED
+  ACCEPTED
+  REJECTED
+}
+
+enum SourceDocumentStatus {
+  PENDING
+  PROCESSING
+  INDEXED
+  FAILED
+}
+
+enum KnowledgeEntityType {
+  BRAND_PROFILE
+  PRODUCT
+  FEATURE
+  AUDIENCE
+  COMPETITOR
+  APPROVED_CLAIM
+  BRAND_GUIDELINE
+  SOURCE_DOCUMENT
+}
+
+enum ActorType {
+  USER
+  AGENT
+  SYSTEM
+}
+
+enum NotificationType {
+  APPROVAL_REQUIRED
+  PUBLISHING_SUCCEEDED
+  PUBLISHING_FAILED
+  OAUTH_DISCONNECTED
+  TOKEN_EXPIRED
+  CAMPAIGN_COMPLETED
+  OPPORTUNITY_DISCOVERED
+  RESEARCH_COMPLETED
+}
+
+enum NotificationSeverity {
+  INFO
+  WARNING
+  ERROR
+}
+
+enum CopilotRole {
+  USER
+  ASSISTANT
+  TOOL
+  SYSTEM
+}
+
+// ---------------------------------------------------------------------------
+// Identity & tenancy
+// ---------------------------------------------------------------------------
+
+model User {
+  id            String   @id @default(cuid())
+  /// Privy DID. The only trusted identity source; never supplied by the browser.
+  privyUserId   String   @unique
+  email         String?
+  walletAddress String?
+  displayName   String?
+  avatarUrl     String?
+  lastLoginAt   DateTime?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  memberships       OrganizationMember[]
+  approvals         ContentApproval[]
+  auditLogs         AuditLog[]
+  notifications     Notification[]
+  copilotThreads    CopilotThread[]
+  createdContent    ContentItem[]        @relation("ContentCreatedBy")
+  createdVersions   ContentVersion[]     @relation("VersionCreatedBy")
+  createdCampaigns  Campaign[]           @relation("CampaignCreatedBy")
+  createdAssets     BrandAsset[]         @relation("AssetCreatedBy")
+  approvedClaims    ApprovedClaim[]      @relation("ClaimApprovedBy")
+  decidedInsights   StrategyInsight[]    @relation("InsightDecidedBy")
+  createdApiKeys    ApiKey[]             @relation("ApiKeyCreatedBy")
+  oauthStates       OAuthState[]
+  triggeredRuns     AgentExecution[]     @relation("ExecutionTriggeredBy")
+  triggeredFlows    WorkflowExecution[]  @relation("FlowTriggeredBy")
+
+  @@index([email])
+  @@index([createdAt])
+}
+
+model Organization {
+  id          String   @id @default(cuid())
+  name        String
+  slug        String   @unique
+  websiteUrl  String?
+  /// IANA timezone. All calendar rendering converts UTC into this zone.
+  timezone    String   @default("UTC")
+
+  automationMode          AutomationMode @default(COPILOT)
+  /// Content types autopilot may publish. Empty by default: autopilot is off.
+  autopilotContentTypes   ContentType[]  @default([])
+  autopilotEnabledAt      DateTime?
+
+  primaryGoals        MarketingGoal[] @default([])
+  onboardingStep      Int             @default(0)
+  onboardingCompletedAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  members            OrganizationMember[]
+  brandProfile       BrandProfile?
+  products           Product[]
+  features           Feature[]
+  audiences          Audience[]
+  competitors        Competitor[]
+  approvedClaims     ApprovedClaim[]
+  forbiddenClaims    ForbiddenClaim[]
+  guidelines         BrandGuideline[]
+  sourceDocuments    SourceDocument[]
+  knowledgeChunks    KnowledgeChunk[]
+  brandAssets        BrandAsset[]
+  researchSources    ResearchSource[]
+  researchItems      ResearchItem[]
+  trends             Trend[]
+  niches             Niche[]
+  opportunities      Opportunity[]
+  campaigns          Campaign[]
+  contentItems       ContentItem[]
+  socialConnections  SocialConnection[]
+  oauthStates        OAuthState[]
+  publications       Publication[]
+  postMetrics        PostMetricSnapshot[]
+  campaignMetrics    CampaignMetric[]
+  platformMetrics    PlatformMetric[]
+  audienceMetrics    AudienceMetric[]
+  strategyInsights   StrategyInsight[]
+  agentExecutions    AgentExecution[]
+  workflowExecutions WorkflowExecution[]
+  copilotThreads     CopilotThread[]
+  auditLogs          AuditLog[]
+  notifications      Notification[]
+  apiKeys            ApiKey[]
+
+  @@index([createdAt])
+}
+
+model OrganizationMember {
+  id             String           @id @default(cuid())
+  organizationId String
+  userId         String
+  role           OrganizationRole @default(VIEWER)
+  invitedById    String?
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, userId])
+  @@index([organizationId, role])
+  @@index([userId])
+}
+
+// ---------------------------------------------------------------------------
+// Brand knowledge base
+// ---------------------------------------------------------------------------
+
+model BrandProfile {
+  id             String  @id @default(cuid())
+  organizationId String  @unique
+  description    String  @db.Text
+  positioning    String? @db.Text
+  mission        String? @db.Text
+  /// Free-form voice descriptor plus structured tone attributes.
+  voiceSummary   String? @db.Text
+  toneAttributes String[] @default([])
+  writingRules   String[] @default([])
+  bannedPhrases  String[] @default([])
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+}
+
+model Product {
+  id             String  @id @default(cuid())
+  organizationId String
+  name           String
+  description    String  @db.Text
+  url            String?
+  isActive       Boolean @default(true)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  features     Feature[]
+
+  @@unique([organizationId, name])
+  @@index([organizationId, createdAt])
+}
+
+model Feature {
+  id             String  @id @default(cuid())
+  organizationId String
+  productId      String?
+  name           String
+  description    String  @db.Text
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  product      Product?     @relation(fields: [productId], references: [id], onDelete: SetNull)
+
+  @@index([organizationId, createdAt])
+  @@index([productId])
+}
+
+model Audience {
+  id             String   @id @default(cuid())
+  organizationId String
+  name           String
+  description    String   @db.Text
+  painPoints     String[] @default([])
+  channels       String[] @default([])
+  /// Free-form demographic/psychographic detail supplied during onboarding.
+  attributes     Json     @default("{}")
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  organization  Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  niches        Niche[]
+  opportunities Opportunity[]
+  campaigns     Campaign[]
+
+  @@unique([organizationId, name])
+  @@index([organizationId, createdAt])
+}
+
+model Competitor {
+  id             String   @id @default(cuid())
+  organizationId String
+  name           String
+  websiteUrl     String?
+  /// Map of provider -> handle, e.g. { "X": "kultgames" }.
+  socialHandles  Json     @default("{}")
+  notes          String?  @db.Text
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, name])
+  @@index([organizationId, createdAt])
+}
+
+/// A factual statement the organization has explicitly approved for use.
+/// AI-generated factual claims are matched against these; unmatched claims
+/// force human approval and can never be published by autopilot.
+model ApprovedClaim {
+  id             String    @id @default(cuid())
+  organizationId String
+  claim          String    @db.Text
+  evidenceUrl    String?
+  approvedById   String?
+  approvedAt     DateTime  @default(now())
+  expiresAt      DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  approvedBy   User?        @relation("ClaimApprovedBy", fields: [approvedById], references: [id], onDelete: SetNull)
+
+  @@index([organizationId, expiresAt])
+}
+
+model ForbiddenClaim {
+  id             String   @id @default(cuid())
+  organizationId String
+  claim          String   @db.Text
+  reason         String   @db.Text
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId])
+}
+
+model BrandGuideline {
+  id             String    @id @default(cuid())
+  organizationId String
+  category       String
+  rule           String    @db.Text
+  severity       RiskLevel @default(MEDIUM)
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId, category])
+}
+
+model SourceDocument {
+  id             String               @id @default(cuid())
+  organizationId String
+  title          String
+  sourceType     String
+  sourceUrl      String?
+  /// Object storage key when the document was uploaded rather than fetched.
+  storageKey     String?
+  mimeType       String?
+  status         SourceDocumentStatus @default(PENDING)
+  extractedChars Int                  @default(0)
+  chunkCount     Int                  @default(0)
+  error          String?              @db.Text
+  createdAt      DateTime             @default(now())
+  updatedAt      DateTime             @updatedAt
+
+  organization Organization     @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  chunks       KnowledgeChunk[]
+
+  @@index([organizationId, status])
+  @@index([organizationId, createdAt])
+}
+
+/// Embedded, retrievable slice of brand knowledge.
+/// `embedding` is a float vector; similarity is computed by the SQL function
+/// kult_cosine_similarity installed in the initial migration.
+model KnowledgeChunk {
+  id               String              @id @default(cuid())
+  organizationId   String
+  sourceDocumentId String?
+  entityType       KnowledgeEntityType
+  /// Primary key of the originating row (product id, audience id, ...).
+  entityId         String?
+  chunkIndex       Int                 @default(0)
+  content          String              @db.Text
+  contentHash      String
+  embedding        Float[]
+  tokenCount       Int                 @default(0)
+  createdAt        DateTime            @default(now())
+
+  organization   Organization    @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  sourceDocument SourceDocument? @relation(fields: [sourceDocumentId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, contentHash])
+  @@index([organizationId, entityType])
+  @@index([sourceDocumentId])
+}
+
+model BrandAsset {
+  id             String   @id @default(cuid())
+  organizationId String
+  name           String
+  storageKey     String
+  mimeType       String
+  sizeBytes      Int
+  width          Int?
+  height         Int?
+  durationMs     Int?
+  /// Publicly reachable URL. Instagram requires a public URL to build a container.
+  publicUrl      String?
+  /// AI-generated assets record the agent execution that produced them.
+  generatedByExecutionId String?
+  createdById    String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  organization Organization         @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  createdBy    User?                @relation("AssetCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+  contentLinks ContentMediaAsset[]
+
+  @@index([organizationId, createdAt])
+}
+
+// ---------------------------------------------------------------------------
+// Research
+// ---------------------------------------------------------------------------
+
+model ResearchSource {
+  id             String               @id @default(cuid())
+  organizationId String
+  type           ResearchSourceType
+  name           String
+  /// Adapter-specific configuration (feed URL, subreddits, queries, channel ids).
+  config         Json                 @default("{}")
+  status         ResearchSourceStatus @default(ACTIVE)
+  /// Populated when the adapter cannot run - e.g. missing credentials, or the
+  /// provider has no official API. Shown verbatim in the research UI.
+  unavailableReason String?           @db.Text
+  lastRunAt      DateTime?
+  lastItemCount  Int                  @default(0)
+  createdAt      DateTime             @default(now())
+  updatedAt      DateTime             @updatedAt
+
+  organization Organization   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  items        ResearchItem[]
+
+  @@unique([organizationId, type, name])
+  @@index([organizationId, status])
+}
+
+model ResearchItem {
+  id             String    @id @default(cuid())
+  organizationId String
+  sourceId       String
+  sourceType     ResearchSourceType
+  /// sha256 of the canonical URL, or of normalised content when there is no URL.
+  hash           String
+  url            String?   @db.Text
+  canonicalUrl   String?   @db.Text
+  title          String    @db.Text
+  body           String?   @db.Text
+  author         String?
+  publishedAt    DateTime?
+  collectedAt    DateTime  @default(now())
+  /// Only metrics the source actually returned. Absent keys mean "not provided".
+  engagement     Json      @default("{}")
+  keywords       String[]  @default([])
+  entities       String[]  @default([])
+  /// -1.0 .. 1.0, null when sentiment was not computed.
+  sentiment      Float?
+  topic          String?
+  /// Raw provider payload, retained as evidence. Never rendered as a claim.
+  raw            Json      @default("{}")
+
+  organization Organization   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  source       ResearchSource @relation(fields: [sourceId], references: [id], onDelete: Cascade)
+  signals      TrendSignal[]
+
+  @@unique([organizationId, hash])
+  @@index([organizationId, collectedAt])
+  @@index([organizationId, publishedAt])
+  @@index([sourceId])
+}
+
+model Trend {
+  id             String      @id @default(cuid())
+  organizationId String
+  name           String
+  slug           String
+  summary        String      @db.Text
+  /// AI-written explanation of the deterministic score. Never the score itself.
+  rationale      String?     @db.Text
+  score          Float       @default(0)
+  /// Individual 0-100 components, persisted so a score can be re-derived.
+  components     Json        @default("{}")
+  /// Signed contribution of each component to the total.
+  contributions  Json        @default("{}")
+  status         TrendStatus @default(EMERGING)
+  keywords       String[]    @default([])
+  firstDetectedAt DateTime   @default(now())
+  lastSeenAt     DateTime    @default(now())
+  expiresAt      DateTime?
+  createdAt      DateTime    @default(now())
+  updatedAt      DateTime    @updatedAt
+
+  organization  Organization       @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  signals       TrendSignal[]
+  opportunities OpportunityTrend[]
+
+  @@unique([organizationId, slug])
+  @@index([organizationId, score])
+  @@index([organizationId, status, lastSeenAt])
+}
+
+/// Links a trend to the concrete research item that evidences it.
+/// Trend evidence in the UI is rendered exclusively from these rows.
+model TrendSignal {
+  id             String   @id @default(cuid())
+  trendId        String
+  researchItemId String
+  weight         Float    @default(1)
+  observedAt     DateTime @default(now())
+
+  trend        Trend        @relation(fields: [trendId], references: [id], onDelete: Cascade)
+  researchItem ResearchItem @relation(fields: [researchItemId], references: [id], onDelete: Cascade)
+
+  @@unique([trendId, researchItemId])
+  @@index([researchItemId])
+}
+
+model Niche {
+  id             String   @id @default(cuid())
+  organizationId String
+  name           String
+  description    String   @db.Text
+  rationale      String?  @db.Text
+  audienceId     String?
+  parentNicheId  String?
+  score          Float    @default(0)
+  components     Json     @default("{}")
+  contributions  Json     @default("{}")
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  organization  Organization      @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  audience      Audience?         @relation(fields: [audienceId], references: [id], onDelete: SetNull)
+  parent        Niche?            @relation("NicheHierarchy", fields: [parentNicheId], references: [id], onDelete: SetNull)
+  children      Niche[]           @relation("NicheHierarchy")
+  opportunities OpportunityNiche[]
+
+  @@unique([organizationId, name])
+  @@index([organizationId, score])
+}
+
+// ---------------------------------------------------------------------------
+// Opportunities
+// ---------------------------------------------------------------------------
+
+model Opportunity {
+  id             String            @id @default(cuid())
+  organizationId String
+  title          String
+  description    String            @db.Text
+  targetAudienceId String?
+  platform       SocialProvider?
+  contentFormat  ContentType?
+  marketingObjective MarketingGoal?
+  recommendedAction  String?       @db.Text
+  /// AI-written justification, grounded in the linked trends and niches.
+  rationale      String?           @db.Text
+
+  relevanceScore   Float @default(0)
+  trendScore       Float @default(0)
+  competitionScore Float @default(0)
+  riskScore        Float @default(0)
+  opportunityScore Float @default(0)
+  components       Json  @default("{}")
+  contributions    Json  @default("{}")
+
+  status    OpportunityStatus @default(NEW)
+  expiresAt DateTime?
+  createdAt DateTime          @default(now())
+  updatedAt DateTime          @updatedAt
+
+  organization Organization       @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  audience     Audience?          @relation(fields: [targetAudienceId], references: [id], onDelete: SetNull)
+  trends       OpportunityTrend[]
+  niches       OpportunityNiche[]
+  contentItems ContentItem[]
+
+  @@index([organizationId, status, opportunityScore])
+  @@index([organizationId, createdAt])
+  @@index([organizationId, expiresAt])
+}
+
+model OpportunityTrend {
+  opportunityId String
+  trendId       String
+
+  opportunity Opportunity @relation(fields: [opportunityId], references: [id], onDelete: Cascade)
+  trend       Trend       @relation(fields: [trendId], references: [id], onDelete: Cascade)
+
+  @@id([opportunityId, trendId])
+  @@index([trendId])
+}
+
+model OpportunityNiche {
+  opportunityId String
+  nicheId       String
+
+  opportunity Opportunity @relation(fields: [opportunityId], references: [id], onDelete: Cascade)
+  niche       Niche       @relation(fields: [nicheId], references: [id], onDelete: Cascade)
+
+  @@id([opportunityId, nicheId])
+  @@index([nicheId])
+}
+
+// ---------------------------------------------------------------------------
+// Campaigns & content
+// ---------------------------------------------------------------------------
+
+model Campaign {
+  id             String            @id @default(cuid())
+  organizationId String
+  name           String
+  objective      String            @db.Text
+  template       CampaignTemplate?
+  audienceId     String?
+  startDate      DateTime
+  endDate        DateTime
+  platforms      SocialProvider[]  @default([])
+  budgetAmount   Decimal?          @db.Decimal(14, 2)
+  budgetCurrency String?
+  status         CampaignStatus    @default(DRAFT)
+  /// Generated strategy document: pillars, angles, platform allocation, calendar.
+  strategy       Json              @default("{}")
+  approvalMode   AutomationMode    @default(COPILOT)
+  createdById    String?
+  activatedAt    DateTime?
+  completedAt    DateTime?
+  createdAt      DateTime          @default(now())
+  updatedAt      DateTime          @updatedAt
+
+  organization Organization     @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  audience     Audience?        @relation(fields: [audienceId], references: [id], onDelete: SetNull)
+  createdBy    User?            @relation("CampaignCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+  steps        CampaignStep[]
+  contentItems ContentItem[]
+  metrics      CampaignMetric[]
+
+  @@index([organizationId, status])
+  @@index([organizationId, startDate])
+}
+
+model CampaignStep {
+  id          String   @id @default(cuid())
+  campaignId  String
+  order       Int
+  title       String
+  description String?  @db.Text
+  dueAt       DateTime?
+  completedAt DateTime?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  campaign Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+
+  @@unique([campaignId, order])
+  @@index([campaignId])
+}
+
+model ContentItem {
+  id             String        @id @default(cuid())
+  organizationId String
+  campaignId     String?
+  opportunityId  String?
+  contentType    ContentType
+  platform       SocialProvider?
+  title          String?
+  body           String        @db.Text
+  /// Ordered post bodies for multi-part formats (X threads). Empty otherwise.
+  threadParts    String[]      @default([])
+  hashtags       String[]      @default([])
+  mentions       String[]      @default([])
+  cta            String?
+
+  status      ContentStatus   @default(DRAFT)
+  riskLevel   RiskLevel       @default(LOW)
+  flaggedTopics ApprovalTopic[] @default([])
+  /// Claims the model asserted, each marked verified against an ApprovedClaim or not.
+  factualClaims Json          @default("[]")
+  requiresApproval Boolean    @default(true)
+
+  scheduledAt DateTime?
+  publishedAt DateTime?
+
+  /// Incremented on every substantive edit. Part of the publishing idempotency key.
+  version     Int    @default(1)
+
+  createdById      String?
+  createdByAgent   String?
+  createdByExecutionId String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  organization Organization        @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  campaign     Campaign?           @relation(fields: [campaignId], references: [id], onDelete: SetNull)
+  opportunity  Opportunity?        @relation(fields: [opportunityId], references: [id], onDelete: SetNull)
+  createdBy    User?               @relation("ContentCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+  versions     ContentVersion[]
+  approvals    ContentApproval[]
+  mediaAssets  ContentMediaAsset[]
+  publications Publication[]
+
+  @@index([organizationId, status])
+  @@index([organizationId, scheduledAt])
+  @@index([organizationId, createdAt])
+  @@index([campaignId])
+  @@index([opportunityId])
+}
+
+model ContentVersion {
+  id            String   @id @default(cuid())
+  contentItemId String
+  version       Int
+  body          String   @db.Text
+  threadParts   String[] @default([])
+  hashtags      String[] @default([])
+  mentions      String[] @default([])
+  cta           String?
+  /// Why the agent wrote it this way. Surfaced in the studio's version history.
+  rationale     String?  @db.Text
+  changeSummary String?
+  factualClaims Json     @default("[]")
+  createdById   String?
+  createdByAgent String?
+  createdAt     DateTime @default(now())
+
+  contentItem ContentItem @relation(fields: [contentItemId], references: [id], onDelete: Cascade)
+  createdBy   User?       @relation("VersionCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+
+  @@unique([contentItemId, version])
+  @@index([contentItemId, createdAt])
+}
+
+model ContentMediaAsset {
+  contentItemId String
+  brandAssetId  String
+  order         Int    @default(0)
+
+  contentItem ContentItem @relation(fields: [contentItemId], references: [id], onDelete: Cascade)
+  brandAsset  BrandAsset  @relation(fields: [brandAssetId], references: [id], onDelete: Cascade)
+
+  @@id([contentItemId, brandAssetId])
+  @@index([brandAssetId])
+}
+
+model ContentApproval {
+  id            String           @id @default(cuid())
+  contentItemId String
+  reviewerId    String
+  decision      ApprovalDecision
+  comment       String?          @db.Text
+  createdAt     DateTime         @default(now())
+
+  contentItem ContentItem @relation(fields: [contentItemId], references: [id], onDelete: Cascade)
+  reviewer    User        @relation(fields: [reviewerId], references: [id], onDelete: Cascade)
+
+  @@index([contentItemId, createdAt])
+  @@index([reviewerId])
+}
+
+// ---------------------------------------------------------------------------
+// Social connections & publishing
+// ---------------------------------------------------------------------------
+
+model SocialConnection {
+  id                   String           @id @default(cuid())
+  organizationId       String
+  provider             SocialProvider
+  providerAccountId    String
+  accountName          String
+  accountUsername      String?
+  /// AES-256-GCM sealed. Never logged, never returned by any API response.
+  accessTokenEncrypted String           @db.Text
+  refreshTokenEncrypted String?         @db.Text
+  expiresAt            DateTime?
+  scopes               String[]         @default([])
+  /// Non-secret provider detail: account type, page id, eligibility findings.
+  metadata             Json             @default("{}")
+  /// Capabilities resolved from the granted scopes and account eligibility.
+  capabilities         Json             @default("{}")
+  status               ConnectionStatus @default(ACTIVE)
+  lastValidatedAt      DateTime?
+  lastErrorCode        String?
+  lastErrorMessage     String?          @db.Text
+  connectedById        String?
+  createdAt            DateTime         @default(now())
+  updatedAt            DateTime         @updatedAt
+
+  organization Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  publications Publication[]
+
+  @@unique([organizationId, provider, providerAccountId])
+  @@index([organizationId, status])
+}
+
+/// Short-lived OAuth authorization state. Guards against CSRF and carries the
+/// PKCE verifier, which is itself encrypted at rest.
+model OAuthState {
+  id                    String         @id @default(cuid())
+  /// The opaque `state` parameter sent to the provider.
+  state                 String         @unique
+  organizationId        String
+  userId                String
+  provider              SocialProvider
+  codeVerifierEncrypted String?        @db.Text
+  redirectPath          String?
+  expiresAt             DateTime
+  consumedAt            DateTime?
+  createdAt             DateTime       @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([expiresAt])
+  @@index([organizationId, provider])
+}
+
+/// One row per publish attempt-set, keyed by idempotencyKey.
+/// A retried worker job recomputes the same key and returns the existing row
+/// rather than posting twice.
+model Publication {
+  id                 String            @id @default(cuid())
+  organizationId     String
+  contentItemId      String
+  socialConnectionId String
+  provider           SocialProvider
+  /// sha256(organizationId:socialConnectionId:contentItemId:contentVersion)
+  idempotencyKey     String            @unique
+  contentVersion     Int
+  status             PublicationStatus @default(PENDING)
+  providerPostId     String?
+  providerUrl        String?           @db.Text
+  /// Provider ids for each part of a multi-post publication (X threads).
+  providerPostIds    String[]          @default([])
+  publishedAt        DateTime?
+  attempts           Int               @default(0)
+  errorCode          String?
+  errorStatus        Int?
+  /// Sanitised provider message. Tokens and secrets are stripped before storage.
+  errorMessage       String?           @db.Text
+  /// Non-secret provider response metadata (rate limit headers, ids).
+  providerResponse   Json              @default("{}")
+  /// USER when a person pressed publish, AGENT when autopilot did.
+  actorType          ActorType         @default(USER)
+  actorUserId        String?
+  createdAt          DateTime          @default(now())
+  updatedAt          DateTime          @updatedAt
+
+  organization     Organization         @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  contentItem      ContentItem          @relation(fields: [contentItemId], references: [id], onDelete: Cascade)
+  socialConnection SocialConnection     @relation(fields: [socialConnectionId], references: [id], onDelete: Cascade)
+  metrics          PostMetricSnapshot[]
+
+  @@index([organizationId, status])
+  @@index([organizationId, publishedAt])
+  @@index([contentItemId])
+  @@index([socialConnectionId])
+}
+
+// ---------------------------------------------------------------------------
+// Analytics
+// ---------------------------------------------------------------------------
+
+/// A point-in-time reading of a published post's metrics.
+/// Null means the provider did not return that metric - never zero-filled.
+model PostMetricSnapshot {
+  id             String         @id @default(cuid())
+  organizationId String
+  publicationId  String
+  provider       SocialProvider
+  capturedAt     DateTime       @default(now())
+
+  impressions    Int?
+  likes          Int?
+  comments       Int?
+  shares         Int?
+  reposts        Int?
+  saves          Int?
+  clicks         Int?
+  videoViews     Int?
+  engagementRate Float?
+
+  /// Raw provider metrics payload, retained verbatim for auditing.
+  raw Json @default("{}")
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  publication  Publication  @relation(fields: [publicationId], references: [id], onDelete: Cascade)
+
+  @@unique([publicationId, capturedAt])
+  @@index([organizationId, capturedAt])
+  @@index([publicationId, capturedAt])
+}
+
+model CampaignMetric {
+  id             String   @id @default(cuid())
+  organizationId String
+  campaignId     String
+  capturedAt     DateTime @default(now())
+  postCount      Int      @default(0)
+  impressions    Int?
+  engagements    Int?
+  clicks         Int?
+  engagementRate Float?
+  raw            Json     @default("{}")
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  campaign     Campaign     @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+
+  @@unique([campaignId, capturedAt])
+  @@index([organizationId, capturedAt])
+}
+
+model PlatformMetric {
+  id             String         @id @default(cuid())
+  organizationId String
+  provider       SocialProvider
+  capturedAt     DateTime       @default(now())
+  postCount      Int            @default(0)
+  impressions    Int?
+  engagements    Int?
+  engagementRate Float?
+  raw            Json           @default("{}")
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, provider, capturedAt])
+  @@index([organizationId, capturedAt])
+}
+
+model AudienceMetric {
+  id             String         @id @default(cuid())
+  organizationId String
+  provider       SocialProvider
+  capturedAt     DateTime       @default(now())
+  followers      Int?
+  followersDelta Int?
+  raw            Json           @default("{}")
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, provider, capturedAt])
+  @@index([organizationId, capturedAt])
+}
+
+/// A proposed change to marketing strategy, derived from measured performance.
+/// Never auto-applied: a human accepts or rejects it.
+model StrategyInsight {
+  id             String                @id @default(cuid())
+  organizationId String
+  type           String
+  /// Structured evidence: metric deltas, sample sizes, comparison baselines.
+  evidence       Json                  @default("{}")
+  confidence     Float                 @default(0)
+  recommendation String                @db.Text
+  supportingContentIds String[]        @default([])
+  status         StrategyInsightStatus @default(PROPOSED)
+  decidedById    String?
+  decidedAt      DateTime?
+  createdAt      DateTime              @default(now())
+  updatedAt      DateTime              @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  decidedBy    User?        @relation("InsightDecidedBy", fields: [decidedById], references: [id], onDelete: SetNull)
+
+  @@index([organizationId, status])
+  @@index([organizationId, createdAt])
+}
+
+// ---------------------------------------------------------------------------
+// Agents, workflows, copilot
+// ---------------------------------------------------------------------------
+
+/// Static agent definition. Seeded from packages/ai and kept in sync on boot so
+/// executions can reference a stable row and operators can inspect configuration.
+model Agent {
+  id                 String   @id @default(cuid())
+  name               String   @unique
+  description        String   @db.Text
+  systemInstructions String   @db.Text
+  /// Which configured model tier this agent runs on: default | fast | reasoning.
+  modelTier          String   @default("default")
+  timeoutMs          Int      @default(120000)
+  maxRetries         Int      @default(2)
+  toolNames          String[] @default([])
+  inputSchema        Json     @default("{}")
+  outputSchema       Json     @default("{}")
+  enabled            Boolean  @default(true)
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  executions AgentExecution[]
+}
+
+model AgentExecution {
+  id                  String          @id @default(cuid())
+  organizationId      String
+  agentId             String?
+  agentName           String
+  workflowExecutionId String?
+  status              ExecutionStatus @default(PENDING)
+  model               String?
+  input               Json            @default("{}")
+  output              Json?
+  error               String?         @db.Text
+  promptTokens        Int?
+  completionTokens    Int?
+  totalTokens         Int?
+  latencyMs           Int?
+  /// Ties this execution to the originating HTTP request or queue job.
+  correlationId       String?
+  triggeredById       String?
+  triggeredByType     ActorType       @default(USER)
+  startedAt           DateTime        @default(now())
+  finishedAt          DateTime?
+
+  organization Organization       @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  agent        Agent?             @relation(fields: [agentId], references: [id], onDelete: SetNull)
+  workflow     WorkflowExecution? @relation(fields: [workflowExecutionId], references: [id], onDelete: SetNull)
+  triggeredBy  User?              @relation("ExecutionTriggeredBy", fields: [triggeredById], references: [id], onDelete: SetNull)
+  toolCalls    AgentToolCall[]
+
+  @@index([organizationId, startedAt])
+  @@index([organizationId, agentName, startedAt])
+  @@index([workflowExecutionId])
+  @@index([correlationId])
+}
+
+model AgentToolCall {
+  id               String          @id @default(cuid())
+  agentExecutionId String
+  toolName         String
+  /// Arguments the model supplied. Retained for audit of autonomous actions.
+  arguments        Json            @default("{}")
+  result           Json?
+  status           ExecutionStatus @default(PENDING)
+  error            String?         @db.Text
+  latencyMs        Int?
+  createdAt        DateTime        @default(now())
+
+  agentExecution AgentExecution @relation(fields: [agentExecutionId], references: [id], onDelete: Cascade)
+
+  @@index([agentExecutionId, createdAt])
+  @@index([toolName])
+}
+
+model Workflow {
+  id          String   @id @default(cuid())
+  name        String   @unique
+  description String   @db.Text
+  /// Ordered step descriptors. The orchestrator persists progress per execution.
+  definition  Json     @default("{}")
+  enabled     Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  executions WorkflowExecution[]
+}
+
+model WorkflowExecution {
+  id             String          @id @default(cuid())
+  organizationId String
+  workflowId     String?
+  workflowName   String
+  status         ExecutionStatus @default(PENDING)
+  input          Json            @default("{}")
+  output         Json?
+  error          String?         @db.Text
+  /// Per-step state, persisted after every step so a restart can resume/report.
+  steps          Json            @default("[]")
+  currentStep    String?
+  correlationId  String?
+  triggeredById  String?
+  triggeredByType ActorType      @default(USER)
+  startedAt      DateTime        @default(now())
+  finishedAt     DateTime?
+
+  organization Organization     @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  workflow     Workflow?        @relation(fields: [workflowId], references: [id], onDelete: SetNull)
+  triggeredBy  User?            @relation("FlowTriggeredBy", fields: [triggeredById], references: [id], onDelete: SetNull)
+  executions   AgentExecution[]
+
+  @@index([organizationId, startedAt])
+  @@index([organizationId, status])
+  @@index([correlationId])
+}
+
+model CopilotThread {
+  id             String   @id @default(cuid())
+  organizationId String
+  userId         String
+  title          String   @default("New conversation")
+  archivedAt     DateTime?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  organization Organization     @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user         User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  messages     CopilotMessage[]
+
+  @@index([organizationId, userId, updatedAt])
+}
+
+model CopilotMessage {
+  id               String      @id @default(cuid())
+  threadId         String
+  role             CopilotRole
+  content          String      @db.Text
+  /// Tool invocations made while producing this message, with their results.
+  toolCalls        Json        @default("[]")
+  agentExecutionId String?
+  createdAt        DateTime    @default(now())
+
+  thread CopilotThread @relation(fields: [threadId], references: [id], onDelete: Cascade)
+
+  @@index([threadId, createdAt])
+}
+
+// ---------------------------------------------------------------------------
+// Platform
+// ---------------------------------------------------------------------------
+
+model AuditLog {
+  id             String    @id @default(cuid())
+  organizationId String?
+  actorUserId    String?
+  actorType      ActorType @default(USER)
+  /// Stable verb, e.g. content.published, integrations.disconnected.
+  action         String
+  resourceType   String?
+  resourceId     String?
+  /// Never contains secrets: values are passed through redactSecrets first.
+  metadata       Json      @default("{}")
+  ip             String?
+  userAgent      String?   @db.Text
+  createdAt      DateTime  @default(now())
+
+  organization Organization? @relation(fields: [organizationId], references: [id], onDelete: SetNull)
+  actor        User?         @relation(fields: [actorUserId], references: [id], onDelete: SetNull)
+
+  @@index([organizationId, createdAt])
+  @@index([organizationId, action, createdAt])
+  @@index([actorUserId, createdAt])
+  @@index([resourceType, resourceId])
+}
+
+model Notification {
+  id             String               @id @default(cuid())
+  organizationId String
+  /// Null targets every member of the organization.
+  userId         String?
+  type           NotificationType
+  severity       NotificationSeverity @default(INFO)
+  title          String
+  body           String?              @db.Text
+  resourceType   String?
+  resourceId     String?
+  readAt         DateTime?
+  createdAt      DateTime             @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user         User?        @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId, userId, readAt])
+  @@index([organizationId, createdAt])
+}
+
+model ApiKey {
+  id             String    @id @default(cuid())
+  organizationId String
+  name           String
+  /// sha256 of the key. The plaintext is shown once at creation and never stored.
+  hashedKey      String    @unique
+  /// Non-secret display prefix, e.g. "kult_live_a1b2".
+  prefix         String
+  scopes         String[]  @default([])
+  lastUsedAt     DateTime?
+  expiresAt      DateTime?
+  revokedAt      DateTime?
+  createdById    String?
+  createdAt      DateTime  @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  createdBy    User?        @relation("ApiKeyCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+
+  @@index([organizationId, revokedAt])
+}
+
+/// Inbound provider webhooks. Stored before processing so a replay is auditable
+/// and so signature failures are visible rather than silent.
+model WebhookEvent {
+  id             String    @id @default(cuid())
+  provider       String
+  /// Provider-supplied event id, when one exists. Enforces at-most-once handling.
+  externalId     String?
+  eventType      String?
+  signatureValid Boolean   @default(false)
+  payload        Json      @default("{}")
+  receivedAt     DateTime  @default(now())
+  processedAt    DateTime?
+  error          String?   @db.Text
+
+  @@unique([provider, externalId])
+  @@index([provider, receivedAt])
+  @@index([processedAt])
+}
