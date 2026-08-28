@@ -63,7 +63,7 @@ Stated plainly.
 
 | Area | Status |
 |---|---|
-| **Docker images** | The **API image builds** through every stage and exports successfully. The worker, web and migrate images have **never been built**. |
+| **Docker images** | The **API and migrate images build through every stage**; only image export is unverified, and it failed for an environmental reason (see below). The **web and worker images have never been built**. |
 | **Containers** | Never run. The stack has not been started via compose. |
 | **nginx** | Config is written but has never been loaded by nginx. |
 | **Social OAuth** | No connect, callback, publish, refresh or metric read has run against a real X, Instagram or LinkedIn account. |
@@ -77,13 +77,28 @@ Stated plainly.
 
 ### On the Docker build
 
-The API image build reached `naming to docker.io/library/kult-marketing-api` and
-exported all layers successfully. Docker Desktop's backend then crashed during
-the final unpack and could not be restarted — the Windows service requires
-elevation unavailable in this environment.
+Two images were attempted and both **completed every build stage**:
 
-So: the API Dockerfile is **proven to build**. The other three are written to the
-same pattern but are **unproven**. Build all four before deploying.
+- **API** — reached `naming to docker.io/library/kult-marketing-api` and exported
+  all layers. Failed only at the final unpack.
+- **migrate** — completed `[runner 10/10]`. Failed only at `exporting to image`.
+
+Both failures were the same underlying problem, and it was not the Dockerfiles:
+**the build host's disk reached 100% (476 GB used, 0 available)**, which
+corrupted Docker's containerd content store. The symptom is
+`input/output error` on blob paths under
+`/var/lib/desktop-containerd/daemon/`, and `docker system df` failing to read
+its own blobs.
+
+16 GB was reclaimed by clearing the npm and pnpm caches, but the content store
+remains corrupt. Recovering it requires **Docker Desktop → Troubleshoot → Clean /
+Purge data**, which deletes every local image on the machine — not something to
+do on someone's behalf.
+
+So: the API and migrate Dockerfiles are **proven to build through every stage**,
+with only image export unverified. The web and worker Dockerfiles are
+**entirely unproven**. Build all four on a host with disk headroom before
+deploying — budget roughly 30 GB for the build cache and image layers.
 
 ---
 

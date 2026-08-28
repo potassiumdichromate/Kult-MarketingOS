@@ -44,6 +44,18 @@ docker build -f infra/docker/Dockerfile.worker  -t kult-marketing-worker:$TAG .
 docker build -f infra/docker/Dockerfile.migrate -t kult-marketing-migrate:$TAG .
 ```
 
+### Disk headroom
+
+Budget roughly **30 GB** on the build host. The four images plus the pnpm store
+cache mount are substantial, and a full disk does not fail cleanly: Docker's
+containerd content store corrupts, producing `input/output error` on blob paths
+and leaving the daemon unable to read its own images. Recovery from that is
+**Docker Desktop → Troubleshoot → Clean / Purge data**, which deletes every local
+image on the machine.
+
+If a build fails at `exporting to image` rather than in a build step, check free
+disk before suspecting the Dockerfile.
+
 ---
 
 ## Single-host deployment

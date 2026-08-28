@@ -1,8 +1,10 @@
 # Kult Marketing OS — build status
 
 **The application is built, runs end to end, and is packaged and documented.**
-What remains is a first real deployment and a first real provider connection. This file records exactly what exists, what is
-verified, and what has not been done, so the next person does not have to guess.
+What remains is a first real deployment and a first real provider connection.
+
+This file records exactly what exists, what is verified, and what has not been
+done, so the next person does not have to guess.
 
 Last updated: 2026-08-28
 
@@ -29,6 +31,16 @@ executed against real infrastructure.
 
 **Test totals: 65 tests passing** - 58 unit, plus 7 worker integration tests run
 against real PostgreSQL and Redis. Every package and app typechecks with zero errors.
+
+### Packaging and documentation
+
+| Item | State | Verification |
+|---|---|---|
+| Dockerfiles | Written for api, worker, web, migrate | **Only the API image has actually been built.** See "What is NOT built" |
+| `docker-compose.production.yml` | Complete | `docker compose config` validates. Works against managed Postgres/Redis by scaling the bundled services to zero |
+| nginx | Complete | TLS termination, security headers, edge rate limits, request size and timeout caps. **Never loaded by nginx** |
+| Clean CI install | Verified | `CI=true pnpm install --frozen-lockfile` succeeds from an empty `node_modules` |
+| Docs | Complete | README, ARCHITECTURE, SECURITY, DEPLOYMENT, ENVIRONMENT, API, SOCIAL-INTEGRATIONS, AI-AGENTS, RUNBOOK, PRODUCTION_READINESS |
 
 ### External API contracts — verified against official documentation
 
@@ -73,11 +85,20 @@ against the installed SDK's own type definitions, not from memory:
 These are absent, not stubbed. There are no placeholder files pretending
 otherwise.
 
-- **Docker / nginx / compose** — nothing in `infra/`.
-- **Documentation** — only `.env.example` (which is complete and accurate) and
-  this file. `README`, `ARCHITECTURE`, `SECURITY`, `DEPLOYMENT`, `API`,
-  `SOCIAL-INTEGRATIONS`, `AI-AGENTS`, `RUNBOOK`, `PRODUCTION_READINESS` are all
-  unwritten.
+- **Image export is unverified, and two images were never built at all.** The
+  API and migrate images complete every build stage and fail only at export;
+  the web and worker images have not been attempted.
+
+  The cause was environmental, not the Dockerfiles: **the build host's disk hit
+  100% (476 GB used, 0 free)**, corrupting Docker's containerd content store —
+  `input/output error` on blob paths, and `docker system df` unable to read its
+  own blobs. Clearing the npm and pnpm caches reclaimed 16 GB, but recovering
+  the store needs Docker Desktop → Troubleshoot → **Clean / Purge data**, which
+  wipes every local image on the machine. Build all four on a host with roughly
+  30 GB of headroom.
+- **The stack has never been started via compose**, and nginx has never loaded
+  its configuration. `docker compose config` validates, which is a syntax check,
+  not a runtime one.
 - **API integration and E2E tests** — the worker has integration tests against
   real Postgres and Redis, but there is no Supertest suite for the API routes and
   no Playwright suite.
@@ -94,8 +115,9 @@ real OpenAI key, so no agent prompt has produced a real generation.
 
 ## Next steps, in order
 
-1. **Build all four images and start the stack.** Only the API image has been
-   proven to build; Docker Desktop crashed before the others could be.
+1. **Build all four images and start the stack**, on a host with disk headroom.
+   The API and migrate images build through every stage; the web and worker
+   images are unattempted.
 2. **First real provider connection.** Everything about OAuth and publishing is
    implemented but has never touched a live provider account. Expect surprises
    there before anywhere else.
