@@ -2,22 +2,22 @@ packages:
   - 'apps/*'
   - 'packages/*'
 
+# pnpm 11 requires an explicit decision for every dependency that wants to run a
+# postinstall script. Leaving any of these unanswered fails the install under
+# CI=true, which is exactly what happens inside a Docker build.
 allowBuilds:
-  '@prisma/engines': set this to true or false
-  '@reown/appkit': set this to true or false
-  '@scarf/scarf': set this to true or false
-  bufferutil: set this to true or false
-  esbuild: set this to true or false
-  keccak: set this to true or false
-  msgpackr-extract: set this to true or false
-  prisma: set this to true or false
-  utf-8-validate: set this to true or false
+  # Required: downloads the Prisma schema engine used by `migrate deploy`.
+  '@prisma/engines': true
+  prisma: true
+  # Required: native binary for the bundler behind vitest and tsx.
+  esbuild: true
+  # Optional but wanted: native msgpack codec BullMQ uses for job payloads.
+  msgpackr-extract: true
 
-onlyBuiltDependencies:
-  - '@prisma/engines'
-  - prisma
-  - esbuild
-  - msgpackr-extract
-  - '@tailwindcss/oxide'
-  - sharp
-  - unrs-resolver
+  # Declined. None of these are needed, and each one runs arbitrary code at
+  # install time, so they stay off.
+  '@reown/appkit': false   # wallet-connect UI pulled in transitively by Privy
+  '@scarf/scarf': false    # install-time analytics
+  bufferutil: false        # optional ws speedup; the JS path is fine
+  utf-8-validate: false    # optional ws speedup; the JS path is fine
+  keccak: false            # native hash addon; the JS fallback is used

@@ -1,7 +1,7 @@
 # Kult Marketing OS — build status
 
-**The application is built and runs end to end.** What remains is packaging and
-documentation, not features. This file records exactly what exists, what is
+**The application is built, runs end to end, and is packaged and documented.**
+What remains is a first real deployment and a first real provider connection. This file records exactly what exists, what is
 verified, and what has not been done, so the next person does not have to guess.
 
 Last updated: 2026-08-28
@@ -94,12 +94,15 @@ real OpenAI key, so no agent prompt has produced a real generation.
 
 ## Next steps, in order
 
-1. **Docker, nginx, compose.** Nothing is packaged for deployment yet.
-2. **Docs** — README, ARCHITECTURE, SECURITY, DEPLOYMENT, RUNBOOK.
-3. **API Supertest suite and Playwright E2E.**
-4. **First real provider connection.** Everything about OAuth and publishing is
+1. **Build all four images and start the stack.** Only the API image has been
+   proven to build; Docker Desktop crashed before the others could be.
+2. **First real provider connection.** Everything about OAuth and publishing is
    implemented but has never touched a live provider account. Expect surprises
    there before anywhere else.
+3. **API Supertest suite and Playwright E2E.**
+
+See [PRODUCTION_READINESS.md](PRODUCTION_READINESS.md) for the full pre-deploy
+checklist.
 
 ## Local development
 

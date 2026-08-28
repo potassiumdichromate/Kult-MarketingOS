@@ -2,6 +2,9 @@ import type { NextConfig } from 'next';
 
 const config: NextConfig = {
   reactStrictMode: true,
+  // Emits a self-contained server bundle so the runtime image carries only what
+  // the app actually imports rather than the whole workspace node_modules.
+  output: 'standalone',
   // Workspace packages ship TypeScript source, so Next must compile them.
   transpilePackages: ['@kult/shared'],
   // The browser bundle must never receive a server secret. Only NEXT_PUBLIC_*

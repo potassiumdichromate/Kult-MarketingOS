@@ -1,0 +1,117 @@
+# syntax=docker/dockerfile:1.7
+#
+# Kult Marketing OS - background worker
+#
+# Multi-stage: a full install to build, a production-only install for the
+# runtime, and a final image that carries neither the toolchain nor the sources.
+#
+# Build from the repository root:
+#   docker build -f infra/docker/Dockerfile.worker -t kult-marketing-worker .
+
+ARG NODE_VERSION=22-alpine
+
+# ---------------------------------------------------------------------------
+# Base
+# ---------------------------------------------------------------------------
+FROM node:${NODE_VERSION} AS base
+# openssl is required by the Prisma schema engine; libc6-compat covers native
+# addons that expect glibc symbols on Alpine.
+RUN apk add --no-cache libc6-compat openssl \
+    && corepack enable
+WORKDIR /app
+ENV PNPM_HOME=/pnpm \
+    PATH=/pnpm:$PATH \
+    CI=true
+
+# ---------------------------------------------------------------------------
+# Dependencies (full, including dev - needed to compile TypeScript)
+# ---------------------------------------------------------------------------
+FROM base AS deps
+# Manifests are copied on their own so this layer is cached until a dependency
+# actually changes, rather than on every source edit.
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc ./
+COPY packages/config/package.json        packages/config/
+COPY packages/shared/package.json        packages/shared/
+COPY packages/database/package.json      packages/database/
+COPY packages/auth/package.json          packages/auth/
+COPY packages/integrations/package.json  packages/integrations/
+COPY packages/ai/package.json            packages/ai/
+COPY apps/api/package.json               apps/api/
+COPY apps/worker/package.json            apps/worker/
+COPY apps/web/package.json               apps/web/
+RUN --mount=type=cache,id=pnpm-store,target=/pnpm/store \
+    pnpm install --frozen-lockfile
+
+# ---------------------------------------------------------------------------
+# Build
+# ---------------------------------------------------------------------------
+FROM base AS build
+COPY --from=deps /app/node_modules ./node_modules
+COPY --from=deps /app/packages ./packages
+COPY --from=deps /app/apps ./apps
+COPY . .
+
+# The Prisma client is generated TypeScript, so it must exist before tsc runs.
+RUN pnpm --filter @kult/database generate
+
+# Packages first: the API imports their compiled output, not their sources.
+RUN pnpm --filter @kult/config build \
+    && pnpm --filter @kult/shared build \
+    && pnpm --filter @kult/database build \
+    && pnpm --filter @kult/auth build \
+    && pnpm --filter @kult/integrations build \
+    && pnpm --filter @kult/ai build \
+    && pnpm --filter @kult/worker build
+
+# ---------------------------------------------------------------------------
+# Production dependencies only
+# ---------------------------------------------------------------------------
+FROM base AS prod-deps
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc ./
+COPY packages/config/package.json        packages/config/
+COPY packages/shared/package.json        packages/shared/
+COPY packages/database/package.json      packages/database/
+COPY packages/auth/package.json          packages/auth/
+COPY packages/integrations/package.json  packages/integrations/
+COPY packages/ai/package.json            packages/ai/
+COPY apps/api/package.json               apps/api/
+COPY apps/worker/package.json            apps/worker/
+COPY apps/web/package.json               apps/web/
+RUN --mount=type=cache,id=pnpm-store,target=/pnpm/store \
+    pnpm install --frozen-lockfile --prod --ignore-scripts
+
+# ---------------------------------------------------------------------------
+# Runtime
+# ---------------------------------------------------------------------------
+FROM node:${NODE_VERSION} AS runner
+RUN apk add --no-cache libc6-compat openssl
+WORKDIR /app
+
+# The worker serves no HTTP, so it binds no port.
+ENV NODE_ENV=production
+
+# Runs as an unprivileged user. `node` already exists in the base image with
+# uid 1000, so no new account is created.
+COPY --from=prod-deps --chown=node:node /app/node_modules ./node_modules
+COPY --from=prod-deps --chown=node:node /app/packages ./packages
+COPY --from=prod-deps --chown=node:node /app/apps ./apps
+
+# Compiled workspace output.
+COPY --from=build --chown=node:node /app/packages/config/dist        ./packages/config/dist
+COPY --from=build --chown=node:node /app/packages/shared/dist        ./packages/shared/dist
+COPY --from=build --chown=node:node /app/packages/database/dist      ./packages/database/dist
+COPY --from=build --chown=node:node /app/packages/database/generated ./packages/database/generated
+COPY --from=build --chown=node:node /app/packages/auth/dist          ./packages/auth/dist
+COPY --from=build --chown=node:node /app/packages/integrations/dist  ./packages/integrations/dist
+COPY --from=build --chown=node:node /app/packages/ai/dist            ./packages/ai/dist
+COPY --from=build --chown=node:node /app/apps/worker/dist            ./apps/worker/dist
+
+USER node
+
+
+# The worker exposes no HTTP surface, so liveness is process-based: BullMQ jobs
+# stall visibly in Redis and in the WorkflowExecution rows if it dies, and the
+# orchestrator restarts the container on exit.
+
+WORKDIR /app/apps/worker
+CMD ["node", "dist/main.js"]

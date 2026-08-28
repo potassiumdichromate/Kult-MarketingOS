@@ -1,0 +1,263 @@
+##
+# Kult Marketing OS - production compose
+#
+# Brings up the full stack on a single host: nginx, web, api, worker, postgres
+# and redis, plus a one-shot migration job that runs before the application
+# starts.
+#
+# Managed Postgres and Redis
+# --------------------------
+# The application does not require the bundled databases. To use a managed
+# service, point DATABASE_URL and REDIS_URL at it and start without the local
+# profiles:
+#
+#   docker compose -f docker-compose.production.yml \
+#     up -d --scale postgres=0 --scale redis=0
+#
+# Nothing else changes: no code path assumes the database is a sibling container.
+#
+# Secrets
+# -------
+# Values come from a .env file next to this one, or from the shell. No secret is
+# baked into an image. The two NEXT_PUBLIC_* build args are the exception and
+# are not secrets - see infra/docker/Dockerfile.web.
+##
+
+name: kult-marketing-os
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: '20m'
+    max-file: '5'
+
+# Environment shared by the API and worker. Both need the same configuration:
+# they run the same domain code, just triggered differently.
+x-app-env: &app-env
+  APP_ENV: ${APP_ENV:-production}
+  NODE_ENV: production
+  LOG_LEVEL: ${LOG_LEVEL:-info}
+  WEB_URL: ${WEB_URL:?WEB_URL is required}
+  API_URL: ${API_URL:?API_URL is required}
+  CORS_ADDITIONAL_ORIGINS: ${CORS_ADDITIONAL_ORIGINS:-}
+  DATABASE_URL: ${DATABASE_URL:?DATABASE_URL is required}
+  REDIS_URL: ${REDIS_URL:?REDIS_URL is required}
+  PRIVY_APP_ID: ${PRIVY_APP_ID:?PRIVY_APP_ID is required}
+  PRIVY_APP_SECRET: ${PRIVY_APP_SECRET:?PRIVY_APP_SECRET is required}
+  PRIVY_VERIFICATION_KEY: ${PRIVY_VERIFICATION_KEY:-}
+  ENCRYPTION_KEY: ${ENCRYPTION_KEY:?ENCRYPTION_KEY is required}
+  OPENAI_API_KEY: ${OPENAI_API_KEY:?OPENAI_API_KEY is required}
+  OPENAI_BASE_URL: ${OPENAI_BASE_URL:-}
+  OPENAI_DEFAULT_MODEL: ${OPENAI_DEFAULT_MODEL:?OPENAI_DEFAULT_MODEL is required}
+  OPENAI_FAST_MODEL: ${OPENAI_FAST_MODEL:?OPENAI_FAST_MODEL is required}
+  OPENAI_REASONING_MODEL: ${OPENAI_REASONING_MODEL:?OPENAI_REASONING_MODEL is required}
+  OPENAI_EMBEDDING_MODEL: ${OPENAI_EMBEDDING_MODEL:?OPENAI_EMBEDDING_MODEL is required}
+  OPENAI_EMBEDDING_DIMENSIONS: ${OPENAI_EMBEDDING_DIMENSIONS:-1536}
+  OPENAI_IMAGE_MODEL: ${OPENAI_IMAGE_MODEL:-}
+  AI_WEB_SEARCH_ENABLED: ${AI_WEB_SEARCH_ENABLED:-true}
+  AI_REQUEST_TIMEOUT_MS: ${AI_REQUEST_TIMEOUT_MS:-120000}
+  AI_MAX_RETRIES: ${AI_MAX_RETRIES:-2}
+  KNOWLEDGE_VECTOR_BACKEND: ${KNOWLEDGE_VECTOR_BACKEND:-inprocess}
+  KNOWLEDGE_INPROCESS_MAX_CHUNKS: ${KNOWLEDGE_INPROCESS_MAX_CHUNKS:-5000}
+  STORAGE_ENDPOINT: ${STORAGE_ENDPOINT:-}
+  STORAGE_REGION: ${STORAGE_REGION:-}
+  STORAGE_BUCKET: ${STORAGE_BUCKET:-}
+  STORAGE_ACCESS_KEY: ${STORAGE_ACCESS_KEY:-}
+  STORAGE_SECRET_KEY: ${STORAGE_SECRET_KEY:-}
+  STORAGE_PUBLIC_BASE_URL: ${STORAGE_PUBLIC_BASE_URL:-}
+  STORAGE_FORCE_PATH_STYLE: ${STORAGE_FORCE_PATH_STYLE:-false}
+  X_CLIENT_ID: ${X_CLIENT_ID:-}
+  X_CLIENT_SECRET: ${X_CLIENT_SECRET:-}
+  X_REDIRECT_URI: ${X_REDIRECT_URI:-}
+  X_BEARER_TOKEN: ${X_BEARER_TOKEN:-}
+  META_APP_ID: ${META_APP_ID:-}
+  META_APP_SECRET: ${META_APP_SECRET:-}
+  META_REDIRECT_URI: ${META_REDIRECT_URI:-}
+  META_GRAPH_VERSION: ${META_GRAPH_VERSION:-v23.0}
+  LINKEDIN_CLIENT_ID: ${LINKEDIN_CLIENT_ID:-}
+  LINKEDIN_CLIENT_SECRET: ${LINKEDIN_CLIENT_SECRET:-}
+  LINKEDIN_REDIRECT_URI: ${LINKEDIN_REDIRECT_URI:-}
+  LINKEDIN_API_VERSION: ${LINKEDIN_API_VERSION:-202608}
+  REDDIT_CLIENT_ID: ${REDDIT_CLIENT_ID:-}
+  REDDIT_CLIENT_SECRET: ${REDDIT_CLIENT_SECRET:-}
+  REDDIT_USER_AGENT: ${REDDIT_USER_AGENT:-}
+  YOUTUBE_API_KEY: ${YOUTUBE_API_KEY:-}
+  RATE_LIMIT_TTL_SECONDS: ${RATE_LIMIT_TTL_SECONDS:-60}
+  RATE_LIMIT_LIMIT: ${RATE_LIMIT_LIMIT:-300}
+  SENTRY_DSN: ${SENTRY_DSN:-}
+  SENTRY_TRACES_SAMPLE_RATE: ${SENTRY_TRACES_SAMPLE_RATE:-0.1}
+  AUTOPILOT_DAILY_PUBLISH_LIMIT: ${AUTOPILOT_DAILY_PUBLISH_LIMIT:-6}
+
+services:
+  # -------------------------------------------------------------------------
+  # Data stores. Neither publishes a port to the host: they are reachable only
+  # from the internal network.
+  # -------------------------------------------------------------------------
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-kult}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required when using the bundled database}
+      POSTGRES_DB: ${POSTGRES_DB:-kult_marketing}
+      # Checksums catch silent corruption; they cannot be enabled after init.
+      POSTGRES_INITDB_ARGS: '--data-checksums'
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER:-kult} -d ${POSTGRES_DB:-kult_marketing}']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    networks: [internal]
+    logging: *default-logging
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    # appendonly keeps queue state across a restart, so delayed publishing jobs
+    # survive. The database remains the source of truth: the worker's
+    # reconciliation sweep repairs anything Redis loses.
+    command: >
+      redis-server
+      --appendonly yes
+      --appendfsync everysec
+      --maxmemory ${REDIS_MAXMEMORY:-512mb}
+      --maxmemory-policy noeviction
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks: [internal]
+    logging: *default-logging
+
+  # -------------------------------------------------------------------------
+  # Migrations. Runs to completion and exits; the API and worker wait for it.
+  # -------------------------------------------------------------------------
+  migrate:
+    build:
+      context: .
+      dockerfile: infra/docker/Dockerfile.migrate
+    image: kult-marketing-migrate:${IMAGE_TAG:-latest}
+    restart: 'no'
+    environment:
+      DATABASE_URL: ${DATABASE_URL:?DATABASE_URL is required}
+      MIGRATE_WAIT_SECONDS: ${MIGRATE_WAIT_SECONDS:-90}
+    depends_on:
+      postgres:
+        condition: service_healthy
+        required: false
+    networks: [internal]
+    logging: *default-logging
+
+  # -------------------------------------------------------------------------
+  # Application
+  # -------------------------------------------------------------------------
+  api:
+    build:
+      context: .
+      dockerfile: infra/docker/Dockerfile.api
+    image: kult-marketing-api:${IMAGE_TAG:-latest}
+    restart: unless-stopped
+    environment:
+      <<: *app-env
+      PORT: 4000
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+        required: false
+      redis:
+        condition: service_healthy
+        required: false
+    networks: [internal]
+    logging: *default-logging
+    # Stateless, so it scales horizontally without further coordination.
+    deploy:
+      replicas: ${API_REPLICAS:-1}
+
+  worker:
+    build:
+      context: .
+      dockerfile: infra/docker/Dockerfile.worker
+    image: kult-marketing-worker:${IMAGE_TAG:-latest}
+    restart: unless-stopped
+    environment:
+      <<: *app-env
+      WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-5}
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+        required: false
+      redis:
+        condition: service_healthy
+        required: false
+    networks: [internal]
+    logging: *default-logging
+    # A publishing job in flight must be allowed to settle rather than being
+    # killed mid-provider-call, which is what creates unverifiable publications.
+    stop_grace_period: 90s
+    deploy:
+      replicas: ${WORKER_REPLICAS:-1}
+
+  web:
+    build:
+      context: .
+      dockerfile: infra/docker/Dockerfile.web
+      args:
+        # Inlined into the client bundle at build time. Changing either one
+        # requires rebuilding this image, not just restarting it.
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:?NEXT_PUBLIC_API_URL is required}
+        NEXT_PUBLIC_PRIVY_APP_ID: ${NEXT_PUBLIC_PRIVY_APP_ID:?NEXT_PUBLIC_PRIVY_APP_ID is required}
+    image: kult-marketing-web:${IMAGE_TAG:-latest}
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+    depends_on:
+      - api
+    networks: [internal]
+    logging: *default-logging
+
+  # -------------------------------------------------------------------------
+  # Edge. The only service bound to the host.
+  # -------------------------------------------------------------------------
+  nginx:
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+    ports:
+      - '80:80'
+      - '443:443'
+    volumes:
+      - ./infra/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./infra/nginx/conf.d:/etc/nginx/conf.d:ro
+      - ${TLS_CERT_DIR:-./infra/nginx/certs}:/etc/nginx/certs:ro
+      - certbot_www:/var/www/certbot
+      - nginx_logs:/var/log/nginx
+    depends_on:
+      - web
+      - api
+    healthcheck:
+      test: ['CMD', 'nginx', '-t']
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    networks: [internal]
+    logging: *default-logging
+
+networks:
+  internal:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  redis_data:
+  certbot_www:
+  nginx_logs:

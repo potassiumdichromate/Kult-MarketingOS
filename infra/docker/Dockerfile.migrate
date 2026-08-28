@@ -1,0 +1,67 @@
+# syntax=docker/dockerfile:1.7
+#
+# Kult Marketing OS - database migration job
+#
+# A dedicated one-shot container. Migrations must never run from the API or
+# worker containers: those scale to several replicas, and concurrent
+# `migrate deploy` runs against one database is how a schema gets corrupted.
+#
+# This image runs to completion and exits. In compose it is a dependency of the
+# API and worker; on a scheduler it is a Job (Kubernetes) or a one-off task
+# (ECS) executed before the new application revision rolls out.
+#
+#   docker build -f infra/docker/Dockerfile.migrate -t kult-marketing-migrate .
+#   docker run --rm -e DATABASE_URL=postgresql://... kult-marketing-migrate
+
+ARG NODE_VERSION=22-alpine
+
+FROM node:${NODE_VERSION} AS base
+RUN apk add --no-cache libc6-compat openssl postgresql-client && corepack enable
+WORKDIR /app
+ENV PNPM_HOME=/pnpm \
+    PATH=/pnpm:$PATH \
+    CI=true
+
+# ---------------------------------------------------------------------------
+# Dependencies
+#
+# The Prisma CLI is a devDependency, so this stage deliberately installs dev
+# dependencies - a production-only install would not contain the migrate command.
+# ---------------------------------------------------------------------------
+FROM base AS deps
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc ./
+COPY packages/config/package.json        packages/config/
+COPY packages/shared/package.json        packages/shared/
+COPY packages/database/package.json      packages/database/
+COPY packages/auth/package.json          packages/auth/
+COPY packages/integrations/package.json  packages/integrations/
+COPY packages/ai/package.json            packages/ai/
+COPY apps/api/package.json               apps/api/
+COPY apps/worker/package.json            apps/worker/
+COPY apps/web/package.json               apps/web/
+RUN --mount=type=cache,id=pnpm-store,target=/pnpm/store \
+    pnpm install --frozen-lockfile --filter @kult/database...
+
+# ---------------------------------------------------------------------------
+# Runtime
+# ---------------------------------------------------------------------------
+FROM base AS runner
+WORKDIR /app
+
+COPY --from=deps --chown=node:node /app/node_modules ./node_modules
+COPY --from=deps --chown=node:node /app/packages/database/node_modules ./packages/database/node_modules
+
+# Only what `migrate deploy` reads: the schema, the migration history, and the
+# config that supplies the connection string.
+COPY --chown=node:node packages/database/prisma        ./packages/database/prisma
+COPY --chown=node:node packages/database/prisma.config.ts ./packages/database/prisma.config.ts
+COPY --chown=node:node packages/database/package.json  ./packages/database/package.json
+COPY --chown=node:node package.json pnpm-workspace.yaml ./
+COPY --chown=node:node infra/docker/migrate-entrypoint.sh /usr/local/bin/migrate-entrypoint.sh
+
+RUN chmod +x /usr/local/bin/migrate-entrypoint.sh
+
+USER node
+WORKDIR /app/packages/database
+
+ENTRYPOINT ["/usr/local/bin/migrate-entrypoint.sh"]

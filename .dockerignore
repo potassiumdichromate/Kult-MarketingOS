@@ -1,0 +1,19 @@
+# Everything the image does not need. Keeping this tight matters: the build
+# context is sent to the daemon on every build.
+node_modules
+**/node_modules
+**/dist
+**/.next
+**/coverage
+**/*.tsbuildinfo
+.git
+.github
+.env
+.env.*
+!.env.example
+docs
+*.md
+!README.md
+playwright-report
+test-results
+packages/database/generated
