@@ -132,8 +132,27 @@ function providerBlock<T extends Record<string, string | undefined>>(
   return required as { [K in keyof T]: string };
 }
 
+/**
+ * Container runtimes cannot express "unset". Compose renders an absent
+ * interpolation with the `:-` default as an empty string, and Kubernetes
+ * ConfigMaps do the same, so an optional variable arrives as `''` rather than
+ * `undefined` — failing its format check instead of being skipped, and taking
+ * the process down at startup over a variable the deployment never used.
+ *
+ * Treat empty as absent, the way a shell and twelve-factor tooling already do.
+ * No variable in the schema accepts the empty string as a meaningful value.
+ */
+function withoutEmptyValues(source: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const present: NodeJS.ProcessEnv = {};
+  for (const [key, value] of Object.entries(source)) {
+    if (typeof value === 'string' && value.trim() === '') continue;
+    present[key] = value;
+  }
+  return present;
+}
+
 export function loadConfig(source: NodeJS.ProcessEnv = process.env): AppConfig {
-  const parsed = envSchema.safeParse(source);
+  const parsed = envSchema.safeParse(withoutEmptyValues(source));
   if (!parsed.success) {
     const issues = parsed.error.issues.map(
       (issue) => `${issue.path.join('.') || '(root)'}: ${issue.message}`,
