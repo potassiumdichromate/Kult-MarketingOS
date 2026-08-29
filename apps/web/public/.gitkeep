@@ -1,0 +1,3 @@
+Next.js serves this directory at the site root. It is intentionally tracked
+while empty: infra/docker/Dockerfile.web copies it, and COPY fails the build
+when its source does not exist.
