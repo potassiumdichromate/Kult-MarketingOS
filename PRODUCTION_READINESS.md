@@ -3,7 +3,7 @@
 An honest account of what has been built, what has been verified, and what has
 not. Nothing here is claimed on the basis of "it should work".
 
-Last updated: 2026-08-28
+Last updated: 2026-08-29
 
 ---
 
@@ -13,7 +13,7 @@ Last updated: 2026-08-28
 boot, connect to real PostgreSQL and Redis, and serve.
 
 **It has not been deployed, and no integration has touched a live provider
-account.** The Docker images are written and the API image builds, but the
+account.** The Docker images are written and two of the four build, but the
 containers have never been run together, and no OAuth flow, publish, metric read
 or AI generation has executed against real credentials.
 
@@ -204,7 +204,8 @@ Each is detected at runtime and surfaced with the exact fix. See
 
 ## Before first production deploy
 
-1. Build **all four** images. Only the API image has been proven to build.
+1. Build **all four** images on a host with ~30 GB free. Only the API and
+   migrate images have been proven to build, and neither was exported.
 2. Start the stack in staging and confirm health, readiness and worker startup.
 3. Load `.env` with real credentials and confirm startup validation passes.
 4. Sign in with a real Privy account end to end.
