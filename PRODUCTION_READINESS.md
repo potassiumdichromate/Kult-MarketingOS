@@ -12,10 +12,14 @@ Last updated: 2026-08-29
 **The application is complete and runs end to end.** API, worker and web all
 boot, connect to real PostgreSQL and Redis, and serve.
 
+**All four images build, and the full stack has been run together via compose**
+— migrations, API, worker, web and nginx, over TLS, with correlation ids flowing
+from the edge.
+
 **It has not been deployed, and no integration has touched a live provider
-account.** The Docker images are written and two of the four build, but the
-containers have never been run together, and no OAuth flow, publish, metric read
-or AI generation has executed against real credentials.
+account.** Every credential used so far has been a placeholder, so no OAuth
+flow, publish, metric read, AI generation or sign-in has executed against real
+services.
 
 Do not treat this as production-proven. Treat it as a complete implementation
 that now needs a staging environment and a first real connection.
@@ -29,7 +33,7 @@ Executed and observed, not assumed.
 | Area | Evidence |
 |---|---|
 | Typecheck | All 6 packages and 3 apps compile with **zero errors** |
-| Unit tests | **58 passing** — RBAC, idempotency, platform limits, state machine, autopilot gating, AES-256-GCM, SSRF, error sanitisation |
+| Unit tests | **63 passing** — RBAC, idempotency, platform limits, state machine, autopilot gating, AES-256-GCM, SSRF, error sanitisation, environment validation |
 | Integration tests | **7 passing** against real PostgreSQL 17 and Redis 7 |
 | Migrations | Applied cleanly to real PostgreSQL 17 — **48 tables** |
 | Cosine function | Verified on all edge cases: identical=1, orthogonal=0, dimension mismatch=0, zero vector=0 |
@@ -38,8 +42,16 @@ Executed and observed, not assumed.
 | Worker boot | 6 queues consuming, 11 agents + 5 workflows synced to the database, 5 schedulers registered in Redis |
 | Web build | 23 routes built; every route in the specification exists |
 | Web serving | All routes return 200; Tailwind tokens compiled (`--color-primary:#ad36f2`, Sora) |
-| Compose | `docker compose config` validates |
 | Clean CI install | `CI=true pnpm install --frozen-lockfile` succeeds from an empty `node_modules` |
+| **Docker images** | **All four build and export** — api, worker, web, migrate |
+| **Full stack** | All seven services run together via compose against bundled PostgreSQL 17 and Redis 7 |
+| Containerised migrations | Applied in-container, exit 0, and a clean no-op on re-run |
+| Containerised API | Healthy, **0 restarts**, `/health` and `/ready` 200 with database and redis `ok` |
+| Containerised worker | **0 restarts**, 6 queues listening, 11 agents + 5 workflows synced, 5 schedulers registered |
+| Scheduler execution | `reconcile-schedules` **fired on its cron pattern and completed in 52ms** — run, not merely registered |
+| nginx | Config parses and certificates load; `:80` returns 301 to https; `app.kult.games` serves 200 over TLS; `api.kult.games` proxies to the API |
+| Edge security headers | HSTS, `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`, `Permissions-Policy` all present |
+| Correlation ids | nginx injects `$request_id`; the API **adopts it** rather than generating its own |
 
 ### The double-publish guarantee
 
@@ -57,15 +69,48 @@ The most important property, tested directly against the database:
 
 ---
 
+## What running the containers found
+
+All four images build and export, and the full seven-service stack has been run
+via compose. Doing so surfaced two defects that typecheck, 63 unit tests, and
+local `pnpm dev` had all passed over.
+
+**Optional environment variables crash-looped the API and worker.** Compose
+renders an unset `${VAR:-}` as an empty string rather than omitting it, and
+Zod's `.optional()` accepts only `undefined`. Six optional URL variables the
+deployment never set — `OPENAI_BASE_URL`, `STORAGE_ENDPOINT`,
+`STORAGE_PUBLIC_BASE_URL`, and the three OAuth redirect URIs — reached their
+format check as `''` and threw, taking both processes down at startup. The API
+restarted 4 times and the worker 5 before it was diagnosed.
+
+This was invisible locally, where `.env` omits those keys and they arrive as
+`undefined`. Kubernetes ConfigMaps render empty the same way, so it was never
+compose-specific. Fixed in `loadConfig` — the one path every deployment method
+shares — and covered by tests.
+
+**The web image had never been buildable.** `Dockerfile.web` copied
+`apps/web/public`, a directory that did not exist in the repository, and `COPY`
+fails a build outright when its source is missing. The conventional Next.js
+standalone three-COPY pattern had been used without checking that this app had a
+`public/`. The directory is now tracked with a `.gitkeep`, and both the
+Dockerfile and the file itself record why an empty tracked directory must stay.
+
+Both defects lived in the gap between "the code is correct" and "the code runs
+where it is deployed". No amount of static checking would have found either one.
+
+**Budget roughly 30 GB** on a build host for the build cache and image layers.
+A full disk does not fail cleanly — it corrupts Docker's containerd content
+store, producing `input/output error` on blob paths and a daemon that takes a
+`SIGBUS` during startup. Recovery means discarding Docker's data disk entirely.
+
+---
+
 ## Not verified
 
 Stated plainly.
 
 | Area | Status |
 |---|---|
-| **Docker images** | The **API and migrate images build through every stage**; only image export is unverified, and it failed for an environmental reason (see below). The **web and worker images have never been built**. |
-| **Containers** | Never run. The stack has not been started via compose. |
-| **nginx** | Config is written but has never been loaded by nginx. |
 | **Social OAuth** | No connect, callback, publish, refresh or metric read has run against a real X, Instagram or LinkedIn account. |
 | **AI agents** | No agent has run against a real OpenAI key. No prompt has produced a real generation. |
 | **Privy login** | No real sign-in. Smoke tests used a placeholder app ID. |
@@ -74,31 +119,6 @@ Stated plainly.
 | **E2E** | No Playwright suite. |
 | **Load / performance** | Never measured. |
 | **Penetration testing** | None. |
-
-### On the Docker build
-
-Two images were attempted and both **completed every build stage**:
-
-- **API** — reached `naming to docker.io/library/kult-marketing-api` and exported
-  all layers. Failed only at the final unpack.
-- **migrate** — completed `[runner 10/10]`. Failed only at `exporting to image`.
-
-Both failures were the same underlying problem, and it was not the Dockerfiles:
-**the build host's disk reached 100% (476 GB used, 0 available)**, which
-corrupted Docker's containerd content store. The symptom is
-`input/output error` on blob paths under
-`/var/lib/desktop-containerd/daemon/`, and `docker system df` failing to read
-its own blobs.
-
-16 GB was reclaimed by clearing the npm and pnpm caches, but the content store
-remains corrupt. Recovering it requires **Docker Desktop → Troubleshoot → Clean /
-Purge data**, which deletes every local image on the machine — not something to
-do on someone's behalf.
-
-So: the API and migrate Dockerfiles are **proven to build through every stage**,
-with only image export unverified. The web and worker Dockerfiles are
-**entirely unproven**. Build all four on a host with disk headroom before
-deploying — budget roughly 30 GB for the build cache and image layers.
 
 ---
 
@@ -128,9 +148,9 @@ deploying — budget roughly 30 GB for the build cache and image layers.
 | Backup documentation | ✅ [RUNBOOK.md](docs/RUNBOOK.md) |
 | Deployment documentation | ✅ [DEPLOYMENT.md](docs/DEPLOYMENT.md) |
 | Environment validation | ✅ Fails fast with a complete problem list |
-| Test suite passing | ✅ 65 tests |
+| Test suite passing | ✅ 70 tests — 63 unit, 7 integration |
 | Production build passing | ✅ All packages, API, worker, web |
-| HTTPS | ⚠️ nginx configured; **never exercised** |
+| HTTPS | ⚠️ Serves TLS; `:80` redirects 301 and both vhosts verified — but with **self-signed** certificates. Never exercised with real ones |
 | Webhook validation | ⚠️ **No webhook receivers implemented.** Model exists, nothing wired |
 | CSRF tokens | ⚠️ Not needed today — bearer tokens in headers, no cookie auth. Revisit if cookies are ever introduced |
 | Error tracking | ⚠️ `SENTRY_DSN` supported; **never connected** |
@@ -204,9 +224,11 @@ Each is detected at runtime and surfaced with the exact fix. See
 
 ## Before first production deploy
 
-1. Build **all four** images on a host with ~30 GB free. Only the API and
-   migrate images have been proven to build, and neither was exported.
-2. Start the stack in staging and confirm health, readiness and worker startup.
+1. Build all four images on a host with ~30 GB free, and start the stack. Both
+   have been done locally; what has not been done is doing them anywhere real.
+2. Issue **real TLS certificates**. nginx has only ever served self-signed ones,
+   and its `server_name` values commit it to `app.kult.games` and
+   `api.kult.games` — deploying under other hostnames means editing that config.
 3. Load `.env` with real credentials and confirm startup validation passes.
 4. Sign in with a real Privy account end to end.
 5. Connect **one** social account and inspect its capability report against what

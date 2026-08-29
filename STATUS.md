@@ -6,7 +6,7 @@ What remains is a first real deployment and a first real provider connection.
 This file records exactly what exists, what is verified, and what has not been
 done, so the next person does not have to guess.
 
-Last updated: 2026-08-28
+Last updated: 2026-08-29
 
 ---
 
@@ -29,16 +29,16 @@ executed against real infrastructure.
 | `apps/worker` | Complete | **Boots and runs.** 6 queues consuming, 11 agents + 5 workflows synced to the database, 5 maintenance schedulers registered. |
 | `apps/web` | Complete | **Builds and serves.** Next.js 16 + React 19 + Tailwind 4. All 23 routes render; every required route from the specification exists. |
 
-**Test totals: 65 tests passing** - 58 unit, plus 7 worker integration tests run
+**Test totals: 70 tests passing** - 63 unit, plus 7 worker integration tests run
 against real PostgreSQL and Redis. Every package and app typechecks with zero errors.
 
 ### Packaging and documentation
 
 | Item | State | Verification |
 |---|---|---|
-| Dockerfiles | Written for api, worker, web, migrate | **Only the API image has actually been built.** See "What is NOT built" |
+| Dockerfiles | api, worker, web, migrate | **All four build and export.** The full stack has been run via compose — see "The stack, running" |
 | `docker-compose.production.yml` | Complete | `docker compose config` validates. Works against managed Postgres/Redis by scaling the bundled services to zero |
-| nginx | Complete | TLS termination, security headers, edge rate limits, request size and timeout caps. **Never loaded by nginx** |
+| nginx | Complete | TLS termination, security headers, edge rate limits, request size and timeout caps. **Config loads and serves** — with self-signed certificates |
 | Clean CI install | Verified | `CI=true pnpm install --frozen-lockfile` succeeds from an empty `node_modules` |
 | Docs | Complete | README, ARCHITECTURE, SECURITY, DEPLOYMENT, ENVIRONMENT, API, SOCIAL-INTEGRATIONS, AI-AGENTS, RUNBOOK, PRODUCTION_READINESS |
 
@@ -80,28 +80,58 @@ against the installed SDK's own type definitions, not from memory:
 
 ---
 
+## The stack, running
+
+All seven services have been brought up together with
+`docker compose -f docker-compose.production.yml up -d`, against the bundled
+PostgreSQL 17 and Redis 7. Observed, not assumed:
+
+| | |
+|---|---|
+| `migrate` | Applies both migrations, exits 0, and is a clean no-op on re-run |
+| `api` | Healthy, **0 restarts**; `/health` and `/ready` both 200, database and redis `ok` |
+| Auth | Protected routes return 401 with the documented envelope and a per-request `requestId` |
+| `worker` | **0 restarts**; 11 agents and 5 workflows synced, 6 queues listening, 5 schedulers registered |
+| Scheduling | `reconcile-schedules` **fired on its cron pattern and completed in 52ms** — executed, not merely registered |
+| `web` | Serves 200 |
+| `nginx` | Config parses, both certificates load, `:80` returns 301 to https, `app.kult.games` serves 200 over TLS, `api.kult.games` proxies to the API |
+| Edge headers | HSTS, `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`, `Permissions-Policy` all present |
+| Correlation ids | nginx injects `$request_id` and the API **adopts it** rather than generating its own |
+
+Two defects were found by doing this, both of which every typecheck and unit
+test had passed over:
+
+1. **Optional environment variables crash-looped the API and worker.** Compose
+   renders an unset `${VAR:-}` as an empty string, and Zod's `.optional()`
+   accepts only `undefined`, so six optional URL variables that the deployment
+   never set failed their format check and killed both processes at startup.
+   Fixed in `loadConfig`, where every deployment path converges, and covered by
+   tests. Kubernetes ConfigMaps behave the same way, so this was not specific to
+   compose.
+2. **The web image had never been buildable.** `Dockerfile.web` copied
+   `apps/web/public`, which did not exist; `COPY` fails outright on a missing
+   source. The directory is now tracked with a `.gitkeep`.
+
+Both lived in the gap between "the code is correct" and "the code runs where it
+is deployed". Nothing short of running the containers could have found either.
+
+**The run used placeholder Privy and OpenAI credentials**, which satisfy
+validation because they are non-empty and nothing more. Login and AI generation
+were not exercised and remain unverified.
+
+---
+
 ## What is NOT built
 
 These are absent, not stubbed. There are no placeholder files pretending
 otherwise.
 
-- **Image export is unverified, and two images were never built at all.** The
-  API and migrate images complete every build stage and fail only at export;
-  the web and worker images have not been attempted.
-
-  The cause was environmental, not the Dockerfiles: **the build host's disk hit
-  100% (476 GB used, 0 free)**, corrupting Docker's containerd content store —
-  `input/output error` on blob paths, and `docker system df` unable to read its
-  own blobs. Clearing the npm and pnpm caches reclaimed 16 GB, but recovering
-  the store needs Docker Desktop → Troubleshoot → **Clean / Purge data**, which
-  wipes every local image on the machine. Build all four on a host with roughly
-  30 GB of headroom.
-- **The stack has never been started via compose**, and nginx has never loaded
-  its configuration. `docker compose config` validates, which is a syntax check,
-  not a runtime one.
 - **API integration and E2E tests** — the worker has integration tests against
   real Postgres and Redis, but there is no Supertest suite for the API routes and
   no Playwright suite.
+- **Webhook receivers.** The model exists; nothing is wired to it.
+- **A dead-letter queue and alerting.** BullMQ retains failed jobs for 14 days,
+  which is retention, not alerting.
 
 ### Explicitly not verified
 
@@ -115,9 +145,9 @@ real OpenAI key, so no agent prompt has produced a real generation.
 
 ## Next steps, in order
 
-1. **Build all four images and start the stack**, on a host with disk headroom.
-   The API and migrate images build through every stage; the web and worker
-   images are unattempted.
+1. **Sign in with a real Privy account.** The stack runs, but every credential
+   used so far was a placeholder. This is the first thing that will exercise
+   real auth end to end.
 2. **First real provider connection.** Everything about OAuth and publishing is
    implemented but has never touched a live provider account. Expect surprises
    there before anywhere else.
