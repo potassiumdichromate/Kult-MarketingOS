@@ -8,6 +8,7 @@ import {
   SecretBox,
   SocialProviderRegistry,
   createStorage,
+  setProviderCallObserver,
   type StorageAdapter,
 } from '@kult/integrations';
 import {
@@ -72,6 +73,12 @@ export function createContext(): WorkerContext {
 
   const redis = redisConnection(config.redisUrl, 'producer');
   const workerRedis = redisConnection(config.redisUrl, 'consumer');
+
+  // Every X / Instagram / LinkedIn call: status, timing, remaining rate limit.
+  setProviderCallObserver((event) => {
+    if (event.ok) logger.info(event, 'Provider call');
+    else logger.warn(event, 'Provider call failed');
+  });
 
   const secrets = new SecretBox(config.encryptionKey);
   const storage = createStorage(config.storage);

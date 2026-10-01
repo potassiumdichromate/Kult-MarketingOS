@@ -1,4 +1,4 @@
-import { Inject, Injectable, type OnModuleDestroy } from '@nestjs/common';
+import { Inject, Injectable, Logger, type OnModuleDestroy } from '@nestjs/common';
 import { Queue } from 'bullmq';
 import { QUEUE_NAMES, type QueueName } from '@kult/shared';
 import { RedisService } from './core.module.js';
@@ -24,6 +24,7 @@ export interface EnqueueOptions {
 @Injectable()
 export class QueuesService implements OnModuleDestroy {
   private readonly queues = new Map<QueueName, Queue>();
+  private readonly logger = new Logger('Queues');
 
   constructor(@Inject(RedisService) private readonly redis: RedisService) {
     for (const name of Object.values(QUEUE_NAMES)) {
@@ -62,6 +63,22 @@ export class QueuesService implements OnModuleDestroy {
       ...(options.attempts !== undefined ? { attempts: options.attempts } : {}),
       ...(options.priority !== undefined ? { priority: options.priority } : {}),
     });
+
+    // The jobId and correlationId link this line to the worker's "Job started"
+    // and "Job finished" lines. Only ids are logged, never the payload.
+    const ids = data as { organizationId?: unknown; correlationId?: unknown };
+    this.logger.log({
+      message: 'Job enqueued',
+      queue: queueName,
+      jobName,
+      jobId: job.id,
+      ...(options.delayMs !== undefined
+        ? { runsAt: new Date(Date.now() + Math.max(0, options.delayMs)).toISOString() }
+        : {}),
+      ...(typeof ids.organizationId === 'string' ? { organizationId: ids.organizationId } : {}),
+      ...(typeof ids.correlationId === 'string' ? { correlationId: ids.correlationId } : {}),
+    });
+
     return job.id ?? '';
   }
 
@@ -75,8 +92,16 @@ export class QueuesService implements OnModuleDestroy {
     // A job already being processed must not be yanked out from under the worker;
     // the worker's own idempotency check is what protects correctness there.
     const state = await job.getState();
-    if (state === 'active') return false;
+    if (state === 'active') {
+      this.logger.warn({
+        message: 'Job not removed: a worker is already processing it',
+        queue: queueName,
+        jobId,
+      });
+      return false;
+    }
     await job.remove();
+    this.logger.log({ message: 'Job removed', queue: queueName, jobId, previousState: state });
     return true;
   }
 

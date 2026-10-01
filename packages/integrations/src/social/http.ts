@@ -41,6 +41,58 @@ const INTERESTING_HEADERS = [
   'x-business-use-case-usage',
 ];
 
+/**
+ * One completed (or failed-to-complete) provider call, as reported to the
+ * observer. Carries no headers, bodies or query strings: Instagram passes its
+ * access token as a query parameter, so only origin and path are kept.
+ */
+export interface ProviderCallEvent {
+  provider: string;
+  method: string;
+  /** Origin and path only. */
+  endpoint: string;
+  /** Undefined when no response arrived (timeout, socket or DNS failure). */
+  status?: number;
+  ok: boolean;
+  durationMs: number;
+  /** Rate-limit and request-id headers from INTERESTING_HEADERS. */
+  headers: Record<string, string>;
+  /** Present when no response arrived. */
+  failure?: 'timeout' | 'network';
+}
+
+export type ProviderCallObserver = (event: ProviderCallEvent) => void;
+
+let observer: ProviderCallObserver | undefined;
+
+/**
+ * Registers the process-wide observer for provider calls.
+ *
+ * This package has no logger of its own; the API and worker each register one at
+ * their composition root, so every X, Instagram and LinkedIn call shows up in
+ * their logs with status, timing and remaining rate limit.
+ */
+export function setProviderCallObserver(next: ProviderCallObserver | undefined): void {
+  observer = next;
+}
+
+function report(event: ProviderCallEvent): void {
+  try {
+    observer?.(event);
+  } catch {
+    // Observability must never change the outcome of a provider call.
+  }
+}
+
+function endpointOf(url: string): string {
+  try {
+    const parsed = new URL(url);
+    return `${parsed.origin}${parsed.pathname}`;
+  } catch {
+    return '[unparseable url]';
+  }
+}
+
 export async function providerRequest<T>(request: ProviderRequest): Promise<ProviderResponse<T>> {
   const {
     provider,
@@ -54,6 +106,8 @@ export async function providerRequest<T>(request: ProviderRequest): Promise<Prov
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const started = Date.now();
+  const endpoint = endpointOf(url);
 
   let response: Response;
   try {
@@ -64,7 +118,17 @@ export async function providerRequest<T>(request: ProviderRequest): Promise<Prov
       signal: controller.signal,
     });
   } catch (error) {
-    if (error instanceof Error && error.name === 'AbortError') {
+    const timedOut = error instanceof Error && error.name === 'AbortError';
+    report({
+      provider,
+      method,
+      endpoint,
+      ok: false,
+      durationMs: Date.now() - started,
+      headers: {},
+      failure: timedOut ? 'timeout' : 'network',
+    });
+    if (timedOut) {
       throw new ProviderError(provider, `The request to ${provider} timed out.`, {
         retryable: true,
       });
@@ -91,6 +155,16 @@ export async function providerRequest<T>(request: ProviderRequest): Promise<Prov
   const ok = expectStatuses
     ? expectStatuses.includes(response.status)
     : response.status >= 200 && response.status < 300;
+
+  report({
+    provider,
+    method,
+    endpoint,
+    status: response.status,
+    ok,
+    durationMs: Date.now() - started,
+    headers: collected,
+  });
 
   if (!ok) {
     throw classifyError(provider, response.status, data, text, collected);

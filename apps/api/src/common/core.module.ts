@@ -1,5 +1,5 @@
 import { Global, Module, type OnModuleDestroy } from '@nestjs/common';
-import { Inject, Injectable } from '@nestjs/common';
+import { Inject, Injectable, Logger } from '@nestjs/common';
 import OpenAI from 'openai';
 import Redis from 'ioredis';
 import { getConfig, type AppConfig } from '@kult/config';
@@ -9,6 +9,7 @@ import {
   SecretBox,
   SocialProviderRegistry,
   createStorage,
+  setProviderCallObserver,
   type StorageAdapter,
 } from '@kult/integrations';
 import {
@@ -51,7 +52,23 @@ export class RedisService implements OnModuleDestroy {
       lazyConnect: false,
     });
     // A connection error must not take the process down; readiness reports it.
-    this.client.on('error', () => undefined);
+    // Logged once per outage rather than on every reconnect attempt, so a Redis
+    // that is down for minutes does not flood the log.
+    const logger = new Logger('Redis');
+    let failing = false;
+    this.client.on('error', (error: Error) => {
+      if (failing) return;
+      failing = true;
+      logger.error({
+        message: 'Redis connection error; retrying in the background',
+        err: error.message,
+      });
+    });
+    this.client.on('ready', () => {
+      if (!failing) return;
+      failing = false;
+      logger.log('Redis connection restored');
+    });
   }
 
   async ping(): Promise<boolean> {
@@ -103,8 +120,16 @@ export class PrismaLifecycle implements OnModuleDestroy {
     {
       provide: SOCIAL_REGISTRY,
       inject: [APP_CONFIG, STORAGE],
-      useFactory: (config: AppConfig, storage: StorageAdapter): SocialProviderRegistry =>
-        new SocialProviderRegistry(config, storage),
+      useFactory: (config: AppConfig, storage: StorageAdapter): SocialProviderRegistry => {
+        // The API makes provider calls during OAuth connect, callback and
+        // validation; log each with status, timing and remaining rate limit.
+        const providerLogger = new Logger('ProviderCall');
+        setProviderCallObserver((event) => {
+          if (event.ok) providerLogger.log(event);
+          else providerLogger.warn(event);
+        });
+        return new SocialProviderRegistry(config, storage);
+      },
     },
     {
       provide: AI_SERVICE,
