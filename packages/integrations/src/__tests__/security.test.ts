@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   DecryptionError,
   SecretBox,
@@ -10,7 +10,13 @@ import {
   safeEqual,
 } from '../crypto.js';
 import { assertPublicUrl, isBlockedAddress } from '../safe-fetch.js';
-import { sanitizeProviderMessage, classifyError } from '../social/http.js';
+import {
+  sanitizeProviderMessage,
+  classifyError,
+  providerRequest,
+  setProviderCallObserver,
+  type ProviderCallEvent,
+} from '../social/http.js';
 import { ValidationError, ProviderError, RateLimitError } from '@kult/shared';
 
 const KEY = randomBytes(32).toString('hex');
@@ -223,5 +229,74 @@ describe('provider error handling', () => {
       {},
     );
     expect(error.message).not.toContain('AQV5P-1VTVVebnLl_SCiyMX');
+  });
+});
+
+describe('provider call observer', () => {
+  afterEach(() => {
+    setProviderCallObserver(undefined);
+    vi.unstubAllGlobals();
+  });
+
+  it('reports status and rate limit without the query string, which can carry a token', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        async () =>
+          new Response('{"id":"1"}', {
+            status: 200,
+            headers: { 'content-type': 'application/json', 'x-rate-limit-remaining': '42' },
+          }),
+      ),
+    );
+    const events: ProviderCallEvent[] = [];
+    setProviderCallObserver((event) => events.push(event));
+
+    await providerRequest({
+      provider: 'Instagram',
+      url: 'https://graph.instagram.com/v23.0/me?fields=id&access_token=IGQVJ-secret-token',
+    });
+
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      provider: 'Instagram',
+      method: 'GET',
+      endpoint: 'https://graph.instagram.com/v23.0/me',
+      status: 200,
+      ok: true,
+      headers: { 'x-rate-limit-remaining': '42' },
+    });
+    expect(JSON.stringify(events)).not.toContain('IGQVJ-secret-token');
+  });
+
+  it('reports a failure that produced no response, and still throws the provider error', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        throw new TypeError('getaddrinfo ENOTFOUND');
+      }),
+    );
+    const events: ProviderCallEvent[] = [];
+    setProviderCallObserver((event) => events.push(event));
+
+    await expect(
+      providerRequest({ provider: 'X', url: 'https://api.x.com/2/tweets', method: 'POST' }),
+    ).rejects.toBeInstanceOf(ProviderError);
+    expect(events[0]).toMatchObject({ provider: 'X', ok: false, failure: 'network' });
+    expect(events[0]?.status).toBeUndefined();
+  });
+
+  it('never lets a throwing observer change the outcome of a call', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('ok', { status: 200 })),
+    );
+    setProviderCallObserver(() => {
+      throw new Error('logger exploded');
+    });
+
+    await expect(
+      providerRequest({ provider: 'X', url: 'https://api.x.com/2/users/me' }),
+    ).resolves.toMatchObject({ status: 200 });
   });
 });

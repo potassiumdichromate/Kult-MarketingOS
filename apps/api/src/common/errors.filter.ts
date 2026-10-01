@@ -47,6 +47,9 @@ export class ErrorsFilter implements ExceptionFilter {
         stack: exception instanceof Error ? exception.stack : undefined,
       });
     } else {
+      // internalDetails carries the operator-only reason behind a 4xx: why Privy
+      // rejected a token, which app id it was minted for, what a provider said.
+      // It is already redacted, and it is the only place that reason survives.
       this.logger.warn({
         requestId,
         status: normalised.status,
@@ -54,6 +57,7 @@ export class ErrorsFilter implements ExceptionFilter {
         path: request.originalUrl,
         method: request.method,
         message: normalised.logMessage,
+        ...(normalised.internalDetails ? { details: normalised.internalDetails } : {}),
       });
     }
 
